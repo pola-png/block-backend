@@ -1,0 +1,25 @@
+Use this folder itself as the Appwrite function source root:
+
+backend/appwrite-functions/block-filtered-feed
+
+Appwrite must see these files at the root of the uploaded source:
+
+- package.json
+- index.js
+- src/main.js
+- src/admob_sync.js
+
+If you upload a zip manually, zip the contents of this folder.
+Do not zip the parent repo folder.
+
+Correct zip root:
+
+- package.json
+- index.js
+- src/
+
+Wrong zip root examples:
+
+- xapzap/
+- backend/
+- backend/appwrite-functions/
