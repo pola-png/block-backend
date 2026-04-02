@@ -187,32 +187,36 @@ export async function assertAdmobSyncAuthorized(req, payload = {}) {
 }
 
 async function fetchAdmobReportRows({ publisherId, startDate, endDate }) {
-  const auth = await buildGoogleAuth()
-  const admob = google.admob({ version: 'v1', auth })
-  const parent = publisherId.startsWith('accounts/')
-    ? publisherId
-    : `accounts/${publisherId}`
+  try {
+    const auth = await buildGoogleAuth()
+    const admob = google.admob({ version: 'v1', auth })
+    const parent = publisherId.startsWith('accounts/')
+      ? publisherId
+      : `accounts/${publisherId}`
 
-  const response = await admob.accounts.networkReport.generate({
-    parent,
-    requestBody: {
-      reportSpec: {
-        dateRange: {
-          startDate: toAdmobDate(startDate),
-          endDate: toAdmobDate(endDate),
+    const response = await admob.accounts.networkReport.generate({
+      parent,
+      requestBody: {
+        reportSpec: {
+          dateRange: {
+            startDate: toAdmobDate(startDate),
+            endDate: toAdmobDate(endDate),
+          },
+          dimensions: ['DATE', 'AD_UNIT', 'AD_FORMAT'],
+          metrics: [
+            'ESTIMATED_EARNINGS',
+            'IMPRESSIONS',
+            'CLICKS',
+            'MATCHED_REQUESTS',
+          ],
         },
-        dimensions: ['DATE', 'AD_UNIT', 'AD_FORMAT'],
-        metrics: [
-          'ESTIMATED_EARNINGS',
-          'IMPRESSIONS',
-          'CLICKS',
-          'MATCHED_REQUESTS',
-        ],
       },
-    },
-  })
+    })
 
-  return extractAdmobRows(response?.data)
+    return extractAdmobRows(response?.data)
+  } catch (error) {
+    throw new Error(formatAdmobError(error))
+  }
 }
 
 async function upsertAdUnitRevenue({ tables, rows, currencyCode }) {
@@ -793,6 +797,28 @@ function readString(value) {
     return null
   }
   return normalized
+}
+
+function formatAdmobError(error) {
+  const status = Number(error?.response?.status || error?.code || 0)
+  const data = error?.response?.data
+  const payload = serializeErrorData(data)
+  const message =
+    readString(data?.error?.message) ||
+    readString(error?.message) ||
+    'AdMob report request failed.'
+  return status
+    ? `AdMob report request failed (${status}): ${message}${payload ? ` | ${payload}` : ''}`
+    : `AdMob report request failed: ${message}${payload ? ` | ${payload}` : ''}`
+}
+
+function serializeErrorData(data) {
+  if (data == null) return ''
+  try {
+    return JSON.stringify(data)
+  } catch (_) {
+    return String(data)
+  }
 }
 
 function readNumber(value, fallback = 0) {
