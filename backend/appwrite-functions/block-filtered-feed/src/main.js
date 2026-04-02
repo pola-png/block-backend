@@ -37,12 +37,14 @@ export default async ({ req, res, error }) => {
     switch (path) {
       case '/v1/notifications/dispatch':
         return res.json(await dispatchNotificationPayload(payload))
+      case '/v1/account/lookup-email':
+        return res.json(await lookupUserByEmail(payload))
       case '/v1/admob/sync':
       case '/v1/admin/admob/sync':
-        assertAdmobSyncAuthorized(req, payload)
+        await assertAdmobSyncAuthorized(req, payload)
         return res.json(await syncAdmobRevenue(payload))
       case '/v1/admin/admob/payouts/process':
-        assertAdmobSyncAuthorized(req, payload)
+        await assertAdmobSyncAuthorized(req, payload)
         return res.json(await processMonthlyCreatorPayouts(payload))
       case '/v1/account/delete':
         return res.json(await deleteCurrentAccount(req, payload))
@@ -213,6 +215,24 @@ async function dispatchNotificationPayload(payload = {}) {
       }
     }
     throw err
+  }
+}
+
+async function lookupUserByEmail(payload = {}) {
+  const email = readString(payload.email)
+  if (!email) {
+    throw new Error('Email is required.')
+  }
+
+  const { users } = buildAdminServices()
+  const result = await users.list([
+    Query.equal('email', email),
+    Query.limit(1),
+  ])
+  const matches = Array.isArray(result.users) ? result.users : []
+
+  return {
+    exists: matches.length > 0,
   }
 }
 
