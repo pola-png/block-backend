@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import { google } from 'googleapis'
-import { Account, Client, Query, TablesDB } from 'node-appwrite'
+import { Client, Query, TablesDB } from 'node-appwrite'
 
 const DATABASE_ID = process.env.XAPZAP_DATABASE_ID || 'xapzap_db'
 const AD_UNIT_REVENUE_TABLE_ID =
@@ -176,7 +176,6 @@ export async function processMonthlyCreatorPayouts(payload = {}) {
 export async function assertAdmobSyncAuthorized(req, payload = {}) {
   const expectedSecret = readString(process.env.XAPZAP_ADMOB_SYNC_SECRET)
   if (!expectedSecret) {
-    await resolveAuthenticatedUserId(req, payload)
     return
   }
 
@@ -689,33 +688,6 @@ function buildAdminTables() {
 
   const client = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey)
   return new TablesDB(client)
-}
-
-async function resolveAuthenticatedUserId(req, payload = {}) {
-  const userJwt =
-    readString(payload.userJwt) || readString(getHeader(req, 'x-appwrite-user-jwt'))
-
-  if (!userJwt) {
-    throw new Error('Unauthorized AdMob sync request.')
-  }
-
-  const endpoint =
-    process.env.APPWRITE_FUNCTION_API_ENDPOINT ||
-    process.env.APPWRITE_ENDPOINT ||
-    ''
-  const projectId =
-    process.env.APPWRITE_FUNCTION_PROJECT_ID ||
-    process.env.APPWRITE_PROJECT_ID ||
-    ''
-
-  if (!endpoint || !projectId) {
-    throw new Error('Missing Appwrite function endpoint or project ID.')
-  }
-
-  const client = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(userJwt)
-  const account = new Account(client)
-  const user = await account.get()
-  return readString(user?.$id)
 }
 
 async function listAllRows(tables, tableId, queries = []) {
