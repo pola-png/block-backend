@@ -194,6 +194,16 @@ async function fetchAdmobReportRows({ publisherId, startDate, endDate }) {
       ? publisherId
       : `accounts/${publisherId}`
 
+    console.log(
+      JSON.stringify({
+        event: 'admob_sync_request',
+        publisherId,
+        parent,
+        startDate,
+        endDate,
+      }),
+    )
+
     const response = await admob.accounts.networkReport.generate({
       parent,
       requestBody: {
