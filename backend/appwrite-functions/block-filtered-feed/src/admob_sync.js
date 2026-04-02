@@ -202,7 +202,7 @@ async function fetchAdmobReportRows({ publisherId, startDate, endDate }) {
             startDate: toAdmobDate(startDate),
             endDate: toAdmobDate(endDate),
           },
-          dimensions: ['DATE', 'AD_UNIT', 'AD_FORMAT'],
+          dimensions: ['DATE', 'AD_UNIT', 'FORMAT'],
           metrics: [
             'ESTIMATED_EARNINGS',
             'IMPRESSIONS',
