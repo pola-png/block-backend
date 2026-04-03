@@ -395,6 +395,8 @@ async function dispatchNotificationPayload(payload = {}) {
     readString(notification.actorAvatar) || readString(notification.avatarUrl) || ''
   const notificationId = readString(notification.$id) || readString(notification.id) || ''
   const type = readString(notification.type) || 'generic'
+  const postId = readString(notification.postId) || ''
+  const creatorId = readString(notification.creatorId) || ''
   const actionUrl =
     readString(notification.actionUrl) ||
     readString(notification.deepLink) ||
@@ -412,6 +414,8 @@ async function dispatchNotificationPayload(payload = {}) {
         userId,
         actorAvatar,
         actionUrl,
+        postId,
+        creatorId,
       },
     })
 
