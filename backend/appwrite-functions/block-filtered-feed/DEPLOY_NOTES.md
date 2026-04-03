@@ -12,12 +12,33 @@ Required Appwrite function event
 - Add a table-row create event for the notifications table to this same function.
 - Use the notifications row create event for your project/database/table.
 
+Required queue table
+
+- Create a dedicated `notification_queue` table for batched notification fan-out.
+- The queue processor reads pending rows from that table.
+- Suggested columns:
+  - `eventType` string
+  - `status` string
+  - `postId` string
+  - `creatorId` string
+  - `title` string
+  - `body` string
+  - `actorName` string
+  - `actorAvatar` string
+  - `actionUrl` string
+  - `recipientIdsJson` string
+  - `recipientCount` integer
+  - `attempts` integer
+  - `createdAt` text
+  - `updatedAt` text
+
 Expected function environment variables
 
 - `APPWRITE_FUNCTION_API_KEY` or `APPWRITE_API_KEY`
 - `APPWRITE_FUNCTION_API_ENDPOINT` or `APPWRITE_ENDPOINT`
 - `APPWRITE_FUNCTION_PROJECT_ID` or `APPWRITE_PROJECT_ID`
 - `XAPZAP_DATABASE_ID`
+- `XAPZAP_NOTIFICATION_QUEUE_TABLE_ID`
 - `XAPZAP_NOTIFICATIONS_TABLE_ID`
 - `FIREBASE_PROJECT_ID`
 - `FIREBASE_CLIENT_EMAIL`

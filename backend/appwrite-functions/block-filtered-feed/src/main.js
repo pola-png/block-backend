@@ -25,6 +25,8 @@ const NOTIFICATIONS_TABLE_ID =
 const POST_AGGREGATES_TABLE_ID =
   process.env.XAPZAP_POST_AGGREGATES_TABLE_ID || 'post_aggregates'
 const FEED_EVENTS_TABLE_ID = process.env.XAPZAP_FEED_EVENTS_TABLE_ID || 'feed_events'
+const NOTIFICATION_QUEUE_TABLE_ID =
+  process.env.XAPZAP_NOTIFICATION_QUEUE_TABLE_ID || 'notification_queue'
 const NOTIFICATION_QUEUE_KIND = 'post_notification_queue'
 const NOTIFICATION_QUEUE_RECIPIENT_BATCH_SIZE = 50
 const NOTIFICATION_PROCESS_BATCH_SIZE = 10
@@ -210,7 +212,7 @@ async function enqueuePostNotificationsFromEvent(req) {
     try {
       const queueRow = await tables.createRow({
         databaseId: DATABASE_ID,
-        tableId: FEED_EVENTS_TABLE_ID,
+        tableId: NOTIFICATION_QUEUE_TABLE_ID,
         rowId: queueId,
         data: {
           eventType: NOTIFICATION_QUEUE_KIND,
@@ -250,14 +252,20 @@ async function enqueuePostNotificationsFromEvent(req) {
 async function processNotificationQueue(payload = {}) {
   const { tables } = buildAdminServices()
   const limit = Math.min(readPositiveInt(payload.limit, NOTIFICATION_PROCESS_BATCH_SIZE), 50)
-  const queueRows = await safeListRows(tables, FEED_EVENTS_TABLE_ID, [
-    Query.equal('eventType', NOTIFICATION_QUEUE_KIND),
+  const queueRows = await safeListRows(tables, NOTIFICATION_QUEUE_TABLE_ID, [
     Query.equal('status', 'pending'),
     Query.orderAsc('createdAt'),
     Query.limit(limit),
   ])
 
   const jobs = queueRows.rows || []
+    .filter((row) => readString(readRowData(row).eventType) === NOTIFICATION_QUEUE_KIND)
+    .sort((left, right) => {
+      const leftCreated = readString(readRowData(left).createdAt)
+      const rightCreated = readString(readRowData(right).createdAt)
+      return leftCreated.localeCompare(rightCreated)
+    })
+    .slice(0, limit)
   let processedJobs = 0
   let createdNotifications = 0
 
@@ -273,7 +281,7 @@ async function processNotificationQueue(payload = {}) {
     const recipientIds = readJsonStringArray(data.recipientIdsJson)
 
     if (!postId || !creatorId || recipientIds.length === 0) {
-      await safeDeleteRow(tables, FEED_EVENTS_TABLE_ID, row.$id)
+      await safeDeleteRow(tables, NOTIFICATION_QUEUE_TABLE_ID, row.$id)
       continue
     }
 
@@ -316,7 +324,7 @@ async function processNotificationQueue(payload = {}) {
       }
     }
 
-    await safeDeleteRow(tables, FEED_EVENTS_TABLE_ID, row.$id)
+    await safeDeleteRow(tables, NOTIFICATION_QUEUE_TABLE_ID, row.$id)
     processedJobs += 1
   }
 
