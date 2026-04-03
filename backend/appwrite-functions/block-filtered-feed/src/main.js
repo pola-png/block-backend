@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { google } from 'googleapis'
 import { Account, Client, Query, Storage, TablesDB, Users } from 'node-appwrite'
 import {
@@ -24,9 +25,15 @@ const NOTIFICATIONS_TABLE_ID =
 const POST_AGGREGATES_TABLE_ID =
   process.env.XAPZAP_POST_AGGREGATES_TABLE_ID || 'post_aggregates'
 const FEED_EVENTS_TABLE_ID = process.env.XAPZAP_FEED_EVENTS_TABLE_ID || 'feed_events'
+const NOTIFICATION_QUEUE_KIND = 'post_notification_queue'
+const NOTIFICATION_QUEUE_RECIPIENT_BATCH_SIZE = 50
+const NOTIFICATION_PROCESS_BATCH_SIZE = 10
 
 export default async ({ req, res, error }) => {
   try {
+    if (isPostCreateEvent(req)) {
+      return res.json(await enqueuePostNotificationsFromEvent(req))
+    }
     if (isNotificationCreateEvent(req)) {
       return res.json(await dispatchNotificationFromEvent(req))
     }
@@ -37,6 +44,8 @@ export default async ({ req, res, error }) => {
     switch (path) {
       case '/v1/notifications/dispatch':
         return res.json(await dispatchNotificationPayload(payload))
+      case '/v1/notifications/process-queue':
+        return res.json(await processNotificationQueue(payload))
       case '/v1/account/lookup-email':
         return res.json(await lookupUserByEmail(payload))
       case '/v1/admob/sync':
@@ -119,6 +128,217 @@ function isNotificationCreateEvent(req) {
     normalized.endsWith('.create') &&
     normalized.includes(`.${NOTIFICATIONS_TABLE_ID.toLowerCase()}.`)
   )
+}
+
+function isPostCreateEvent(req) {
+  const trigger = readString(getHeader(req, 'x-appwrite-trigger'))
+  const event = readString(getHeader(req, 'x-appwrite-event'))
+  if (trigger !== 'event' || !event) {
+    return false
+  }
+  const normalized = event.toLowerCase()
+  return (
+    normalized.includes('.rows.') &&
+    normalized.endsWith('.create') &&
+    normalized.includes(`.${POSTS_TABLE_ID.toLowerCase()}.`)
+  )
+}
+
+async function enqueuePostNotificationsFromEvent(req) {
+  const payload = parseJsonBody(req)
+  const post = payload?.data?.$id
+    ? payload.data
+    : payload?.row?.$id
+      ? payload.row
+      : payload
+  const postData = readRowData(post)
+  const postId = readString(post?.$id) || readString(postData.$id)
+  const creatorId = readString(postData.userId)
+
+  if (!postId || !creatorId) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'missing_post_or_creator',
+      postId,
+      creatorId,
+    }
+  }
+
+  const { tables } = buildAdminServices()
+  const creatorProfile = await getProfileByUserIdAdmin(tables, creatorId)
+  const creatorName =
+    readString(creatorProfile?.data?.displayName) ||
+    readString(creatorProfile?.data?.username) ||
+    readString(postData.displayName) ||
+    readString(postData.username) ||
+    'Someone'
+  const creatorAvatar =
+    readString(creatorProfile?.data?.avatarUrl) ||
+    readString(postData.userAvatar) ||
+    readString(postData.avatarUrl) ||
+    ''
+  const postTitle = readString(postData.title)
+  const postContent = readString(postData.content)
+  const body =
+    postTitle ||
+    (postContent.length > 120
+      ? `${postContent.slice(0, 117)}...`
+      : postContent) ||
+    'New post'
+
+  const recipientRows = await listAllRows(tables, PROFILES_TABLE_ID, [
+    Query.limit(100),
+  ])
+  const recipientIds = uniqueStrings(
+    recipientRows
+      .map((row) => readString(readRowData(row).userId) || readString(row.$id))
+      .filter((userId) => userId && userId !== creatorId),
+  )
+
+  const queuedJobs = []
+  const recipientChunks = chunkArray(
+    recipientIds,
+    NOTIFICATION_QUEUE_RECIPIENT_BATCH_SIZE,
+  )
+  for (let index = 0; index < recipientChunks.length; index += 1) {
+    const recipientChunk = recipientChunks[index]
+    if (recipientChunk.length === 0) {
+      continue
+    }
+    const queueId = stableQueueJobId(postId, index)
+    try {
+      const queueRow = await tables.createRow({
+        databaseId: DATABASE_ID,
+        tableId: FEED_EVENTS_TABLE_ID,
+        rowId: queueId,
+        data: {
+          eventType: NOTIFICATION_QUEUE_KIND,
+          postId,
+          creatorId,
+          title: creatorName,
+          body,
+          actorName: creatorName,
+          actorAvatar: creatorAvatar,
+          actionUrl: `/post/${postId}`,
+          recipientIdsJson: JSON.stringify(recipientChunk),
+          recipientCount: recipientChunk.length,
+          status: 'pending',
+          attempts: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      })
+      queuedJobs.push(queueRow.$id || queueId)
+    } catch (err) {
+      const code = Number(err?.code || 0)
+      if (code !== 409) {
+        throw err
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    postId,
+    creatorId,
+    recipientCount: recipientIds.length,
+    queuedJobs: queuedJobs.length,
+  }
+}
+
+async function processNotificationQueue(payload = {}) {
+  const { tables } = buildAdminServices()
+  const limit = Math.min(readPositiveInt(payload.limit, NOTIFICATION_PROCESS_BATCH_SIZE), 50)
+  const queueRows = await safeListRows(tables, FEED_EVENTS_TABLE_ID, [
+    Query.equal('eventType', NOTIFICATION_QUEUE_KIND),
+    Query.equal('status', 'pending'),
+    Query.orderAsc('createdAt'),
+    Query.limit(limit),
+  ])
+
+  const jobs = queueRows.rows || []
+  let processedJobs = 0
+  let createdNotifications = 0
+
+  for (const row of jobs) {
+    const data = readRowData(row)
+    const postId = readString(data.postId)
+    const creatorId = readString(data.creatorId)
+    const title = readString(data.title) || 'XapZap'
+    const body = readString(data.body) || 'New post'
+    const actorName = readString(data.actorName) || title
+    const actorAvatar = readString(data.actorAvatar) || ''
+    const actionUrl = readString(data.actionUrl) || (postId ? `/post/${postId}` : '')
+    const recipientIds = readJsonStringArray(data.recipientIdsJson)
+
+    if (!postId || !creatorId || recipientIds.length === 0) {
+      await safeDeleteRow(tables, FEED_EVENTS_TABLE_ID, row.$id)
+      continue
+    }
+
+    for (const recipientId of recipientIds) {
+      if (!recipientId || recipientId === creatorId) {
+        continue
+      }
+      const blockedIds = await loadBlockedIds(tables, recipientId)
+      if (blockedIds.has(creatorId)) {
+        continue
+      }
+
+      const notificationId = stableNotificationId(postId, recipientId)
+      try {
+        await tables.createRow({
+          databaseId: DATABASE_ID,
+          tableId: NOTIFICATIONS_TABLE_ID,
+          rowId: notificationId,
+          data: {
+            userId: recipientId,
+            title,
+            body,
+            type: 'post',
+            actorName,
+            actorAvatar,
+            actionUrl,
+            postId,
+            creatorId,
+            timestamp: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            read: false,
+          },
+        })
+        createdNotifications += 1
+      } catch (err) {
+        const code = Number(err?.code || 0)
+        if (code !== 409) {
+          throw err
+        }
+      }
+    }
+
+    await safeDeleteRow(tables, FEED_EVENTS_TABLE_ID, row.$id)
+    processedJobs += 1
+  }
+
+  return {
+    ok: true,
+    processedJobs,
+    createdNotifications,
+  }
+}
+
+function stableNotificationId(postId, followerId) {
+  return createHash('sha1')
+    .update(`${postId}:${followerId}:post`)
+    .digest('hex')
+    .slice(0, 36)
+}
+
+function stableQueueJobId(postId, index) {
+  return createHash('sha1')
+    .update(`${postId}:queue:${index}`)
+    .digest('hex')
+    .slice(0, 36)
 }
 
 async function dispatchNotificationFromEvent(req) {
@@ -1107,6 +1327,21 @@ function readStringArray(value) {
     return []
   }
   return value.map(readString).filter(Boolean)
+}
+
+function readJsonStringArray(value) {
+  if (Array.isArray(value)) {
+    return readStringArray(value)
+  }
+  if (typeof value !== 'string' || !value.trim()) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? readStringArray(parsed) : []
+  } catch (_) {
+    return []
+  }
 }
 
 function readPositiveInt(value, fallback) {
