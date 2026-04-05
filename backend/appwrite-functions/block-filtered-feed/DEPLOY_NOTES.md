@@ -6,6 +6,9 @@ This function package now handles:
 - account deletion route
 - AdMob sync routes
 - FCM push dispatch for notification rows
+- Appwrite Messaging push target registration
+- Appwrite Messaging topic subscription
+- Appwrite Messaging push sending for topic/user/target delivery
 
 Required Appwrite function event
 
@@ -32,6 +35,20 @@ Required queue table
   - `createdAt` text
   - `updatedAt` text
 
+Required messaging target table
+
+- Create a dedicated `messaging_targets` table to map your app device IDs to Appwrite Messaging target IDs.
+- Suggested columns:
+  - `userId` string
+  - `deviceId` string
+  - `targetId` string
+  - `platform` string
+  - `targetName` string
+  - `enabled` boolean
+  - `tokenHash` string
+  - `createdAt` text
+  - `updatedAt` text
+
 Expected function environment variables
 
 - `APPWRITE_FUNCTION_API_KEY` or `APPWRITE_API_KEY`
@@ -40,6 +57,9 @@ Expected function environment variables
 - `XAPZAP_DATABASE_ID`
 - `XAPZAP_NOTIFICATION_QUEUE_TABLE_ID`
 - `XAPZAP_NOTIFICATIONS_TABLE_ID`
+- `XAPZAP_MESSAGING_TARGETS_TABLE_ID`
+- `XAPZAP_BROADCAST_TOPIC_ID`
+- `XAPZAP_PUSH_PROVIDER_ID` (optional when only one push provider is configured)
 - `FIREBASE_PROJECT_ID`
 - `FIREBASE_CLIENT_EMAIL`
 - `FIREBASE_PRIVATE_KEY`
@@ -59,6 +79,9 @@ Manual test route
 
 - The same function also supports an explicit route:
 - `/v1/notifications/dispatch`
+- `/v1/messaging/push/register-device`
+- `/v1/messaging/topics/subscribe-device`
+- `/v1/messaging/push/send`
 
 Minimal JSON body example
 
@@ -72,6 +95,36 @@ Minimal JSON body example
     "type": "follow",
     "actorAvatar": "https://example.com/avatar.jpg",
     "actionUrl": "/notifications"
+  }
+}
+```
+
+Register device example
+
+```json
+{
+  "token": "fcm_registration_token",
+  "enabled": true,
+  "platform": "android",
+  "deviceId": "local_device_id",
+  "targetName": "mobile-android",
+  "topicId": "all-users",
+  "userJwt": "appwrite_user_jwt"
+}
+```
+
+Send push example
+
+```json
+{
+  "mode": "topic",
+  "topicId": "all-users",
+  "title": "New post on XapZap",
+  "body": "Someone just posted a new update.",
+  "data": {
+    "type": "post",
+    "postId": "post_123",
+    "actionUrl": "/post/post_123"
   }
 }
 ```
