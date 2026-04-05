@@ -35,8 +35,6 @@ const POST_AGGREGATES_TABLE_ID =
 const FEED_EVENTS_TABLE_ID = process.env.XAPZAP_FEED_EVENTS_TABLE_ID || 'feed_events'
 const NOTIFICATION_QUEUE_TABLE_ID =
   process.env.XAPZAP_NOTIFICATION_QUEUE_TABLE_ID || 'notification_queue'
-const MESSAGING_TARGETS_TABLE_ID =
-  process.env.XAPZAP_MESSAGING_TARGETS_TABLE_ID || 'messaging_targets'
 const NOTIFICATION_QUEUE_KIND = 'post_notification_queue'
 const NOTIFICATION_QUEUE_RECIPIENT_BATCH_SIZE = 50
 const NOTIFICATION_PROCESS_BATCH_SIZE = 10
@@ -57,10 +55,6 @@ export default async ({ req, res, error }) => {
     const payload = parseJsonBody(req)
 
     switch (path) {
-      case '/v1/messaging/push/register-device':
-        return res.json(await registerMessagingPushDevice(req, payload))
-      case '/v1/messaging/topics/subscribe-device':
-        return res.json(await subscribeDeviceToTopic(req, payload))
       case '/v1/messaging/push/send':
         return res.json(await sendPushRoute(payload))
       case '/v1/notifications/dispatch':
@@ -495,139 +489,6 @@ async function dispatchNotificationPayload(payload = {}) {
   }
 }
 
-async function registerMessagingPushDevice(req, payload = {}) {
-  const userId = await resolveAuthenticatedUserId(req, payload)
-  const userJwt =
-    readString(payload.userJwt) || readString(getHeader(req, 'x-appwrite-user-jwt'))
-  const token = readString(payload.token)
-  const deviceId = readString(payload.deviceId) || stableDeviceIdFromToken(token)
-  const targetName = readString(payload.targetName) || 'mobile-device'
-  const topicId = readString(payload.topicId) || DEFAULT_BROADCAST_TOPIC_ID
-  const enabled = readBoolean(payload.enabled, true)
-  const platform = readString(payload.platform) || 'android'
-
-  if (!userJwt) {
-    throw new Error('Authentication required.')
-  }
-  if (!token) {
-    throw new Error('Push token is required.')
-  }
-  if (!deviceId) {
-    throw new Error('Device ID is required.')
-  }
-
-  const mappingId = stableMessagingTargetRowId(userId, deviceId)
-  const { tables } = buildAdminServices()
-  const account = buildScopedAccountClient(userJwt)
-
-  let created = false
-  let updated = false
-  let targetId = readString(payload.targetId) || stableMessagingTargetId(userId, deviceId)
-
-  try {
-    await account.createPushTarget({
-      targetId,
-      identifier: token,
-      ...(PUSH_PROVIDER_ID ? { providerId: PUSH_PROVIDER_ID } : {}),
-      ...(targetName ? { name: targetName } : {}),
-    })
-    created = true
-  } catch (err) {
-    const code = Number(err?.code || 0)
-    if (code !== 409) {
-      throw err
-    }
-    await account.updatePushTarget({
-      targetId,
-      identifier: token,
-      ...(PUSH_PROVIDER_ID ? { providerId: PUSH_PROVIDER_ID } : {}),
-      ...(targetName ? { name: targetName } : {}),
-    })
-    updated = true
-  }
-
-  await upsertMessagingTargetRow(tables, {
-    mappingId,
-    userId,
-    deviceId,
-    targetId,
-    token,
-    enabled,
-    platform,
-    targetName,
-  })
-
-  let subscribed = false
-  let subscriberId = null
-  if (enabled && topicId) {
-    const subscription = await subscribeTargetToTopicWithJwt({
-      userJwt,
-      topicId,
-      targetId,
-    })
-    subscribed = Boolean(subscription.ok)
-    subscriberId = subscription.subscriberId
-  }
-
-  return {
-    ok: true,
-    userId,
-    targetId,
-    deviceId,
-    platform,
-    enabled,
-    created,
-    updated,
-    subscribed,
-    subscriberId,
-    topicId,
-    providerType: 'push',
-    identifier: token,
-  }
-}
-
-async function subscribeDeviceToTopic(req, payload = {}) {
-  const userId = await resolveAuthenticatedUserId(req, payload)
-  const userJwt =
-    readString(payload.userJwt) || readString(getHeader(req, 'x-appwrite-user-jwt'))
-  const topicId = readString(payload.topicId) || DEFAULT_BROADCAST_TOPIC_ID
-  const deviceId = readString(payload.deviceId)
-  let targetId = readString(payload.targetId)
-
-  if (!userJwt) {
-    throw new Error('Authentication required.')
-  }
-  if (!topicId) {
-    throw new Error('Topic ID is required.')
-  }
-
-  if (!targetId && deviceId) {
-    const { tables } = buildAdminServices()
-    const mapping = await getMessagingTargetRow(tables, userId, deviceId)
-    targetId = readString(readRowData(mapping).targetId)
-  }
-
-  if (!targetId) {
-    throw new Error('Target ID or device ID is required.')
-  }
-
-  const subscription = await subscribeTargetToTopicWithJwt({
-    userJwt,
-    topicId,
-    targetId,
-  })
-
-  return {
-    ok: true,
-    userId,
-    topicId,
-    targetId,
-    subscriberId: subscription.subscriberId,
-    providerType: 'push',
-    created: subscription.created,
-  }
-}
-
 async function sendPushRoute(payload = {}) {
   const mode = readString(payload.mode) || inferPushMode(payload)
   const title = readString(payload.title) || 'XapZap'
@@ -670,102 +531,6 @@ async function lookupUserByEmail(payload = {}) {
 
   return {
     exists: matches.length > 0,
-  }
-}
-
-async function getMessagingTargetRow(tables, userId, deviceId) {
-  if (!userId || !deviceId) {
-    return null
-  }
-  const rowId = stableMessagingTargetRowId(userId, deviceId)
-  try {
-    return await tables.getRow({
-      databaseId: DATABASE_ID,
-      tableId: MESSAGING_TARGETS_TABLE_ID,
-      rowId,
-    })
-  } catch (err) {
-    if (isNotFoundError(err)) {
-      return null
-    }
-    throw err
-  }
-}
-
-async function upsertMessagingTargetRow(
-  tables,
-  {
-    mappingId,
-    userId,
-    deviceId,
-    targetId,
-    token,
-    enabled,
-    platform,
-    targetName,
-  },
-) {
-  const payload = {
-    userId,
-    deviceId,
-    targetId,
-    platform,
-    targetName,
-    enabled,
-    tokenHash: hashToken(token),
-    updatedAt: new Date().toISOString(),
-  }
-
-  try {
-    await tables.updateRow({
-      databaseId: DATABASE_ID,
-      tableId: MESSAGING_TARGETS_TABLE_ID,
-      rowId: mappingId,
-      data: payload,
-    })
-  } catch (err) {
-    if (!isNotFoundError(err)) {
-      throw err
-    }
-    await tables.createRow({
-      databaseId: DATABASE_ID,
-      tableId: MESSAGING_TARGETS_TABLE_ID,
-      rowId: mappingId,
-      data: {
-        ...payload,
-        createdAt: new Date().toISOString(),
-      },
-    })
-  }
-}
-
-async function subscribeTargetToTopicWithJwt({ userJwt, topicId, targetId }) {
-  const { messaging: adminMessaging } = buildAdminServices()
-  await ensureTopicExists(adminMessaging, topicId)
-
-  const messaging = buildScopedMessagingClient(userJwt)
-  const subscriberId = stableSubscriberId(topicId, targetId)
-  try {
-    await messaging.createSubscriber({
-      topicId,
-      subscriberId,
-      targetId,
-    })
-    return {
-      ok: true,
-      created: true,
-      subscriberId,
-    }
-  } catch (err) {
-    const code = Number(err?.code || 0)
-    if (code === 409) {
-      return {
-        ok: true,
-        created: false,
-        subscriberId,
-      }
-    }
-    throw err
   }
 }
 
@@ -1055,32 +820,6 @@ function buildScopedTables(req) {
   }
 
   return new TablesDB(client)
-}
-
-function buildScopedAccountClient(userJwt) {
-  const { endpoint, projectId } = resolveAppwriteConfig()
-  if (!endpoint || !projectId) {
-    throw new Error('Missing Appwrite function endpoint or project ID.')
-  }
-  if (!userJwt) {
-    throw new Error('Authentication required.')
-  }
-
-  const client = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(userJwt)
-  return new Account(client)
-}
-
-function buildScopedMessagingClient(userJwt) {
-  const { endpoint, projectId } = resolveAppwriteConfig()
-  if (!endpoint || !projectId) {
-    throw new Error('Missing Appwrite function endpoint or project ID.')
-  }
-  if (!userJwt) {
-    throw new Error('Authentication required.')
-  }
-
-  const client = new Client().setEndpoint(endpoint).setProject(projectId).setJWT(userJwt)
-  return new Messaging(client)
 }
 
 function buildAdminServices() {
@@ -1814,43 +1553,6 @@ function sanitizePushData(data) {
       .map(([key, value]) => [key, value == null ? '' : String(value)])
       .filter(([, value]) => value !== ''),
   )
-}
-
-function hashToken(token) {
-  const raw = readString(token)
-  if (!raw) {
-    return ''
-  }
-  return createHash('sha1').update(raw).digest('hex')
-}
-
-function stableDeviceIdFromToken(token) {
-  const raw = readString(token)
-  if (!raw) {
-    return null
-  }
-  return createHash('sha1').update(`device:${raw}`).digest('hex').slice(0, 24)
-}
-
-function stableMessagingTargetRowId(userId, deviceId) {
-  return createHash('sha1')
-    .update(`${userId}:${deviceId}:mapping`)
-    .digest('hex')
-    .slice(0, 36)
-}
-
-function stableMessagingTargetId(userId, deviceId) {
-  return createHash('sha1')
-    .update(`${userId}:${deviceId}:target`)
-    .digest('hex')
-    .slice(0, 36)
-}
-
-function stableSubscriberId(topicId, targetId) {
-  return createHash('sha1')
-    .update(`${topicId}:${targetId}:subscriber`)
-    .digest('hex')
-    .slice(0, 36)
 }
 
 function stablePushMessageId({
