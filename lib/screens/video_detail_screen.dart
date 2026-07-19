@@ -1,21 +1,28 @@
 import 'dart:async';
 
+import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
-import 'dart:io' show Platform;
 import 'package:video_player/video_player.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import '../models/post.dart';
-import '../widgets/post_card.dart';
-import 'package:lucide_icons/lucide_icons.dart';
-import '../services/appwrite_service.dart';
-import '../services/storage_service.dart';
-import '../widgets/voice_recorder.dart';
 import '../services/ad_helper.dart';
-import '../services/ad_frequency_service.dart';
+import '../models/post.dart';
+import '../screens/comment_screen.dart';
+import '../widgets/taggable_text.dart';
+import '../services/appwrite_service.dart';
+import '../services/native_ad_preload_service.dart';
+import '../services/post_view_retry_queue.dart';
+import '../services/global_video_manager.dart';
+import '../services/video_detail_ads_controller.dart';
+import '../services/video_detail_playback_controller.dart';
+import '../widgets/tv_focusable_action.dart';
+import '../widgets/video_detail_comments_bar.dart';
+import '../widgets/video_detail_meta_section.dart';
 import '../widgets/watch_video_card.dart';
+import '../widgets/series_episode_tray.dart';
 import '../services/feed_cache.dart';
+import '../main.dart';
 
 class VideoDetailScreen extends StatefulWidget {
   final Post post;
@@ -41,36 +48,47 @@ class VideoDetailScreen extends StatefulWidget {
   State<VideoDetailScreen> createState() => _VideoDetailScreenState();
 }
 
-class _VideoDetailScreenState extends State<VideoDetailScreen> {
-  VideoPlayerController? _controller;
-  Future<void>? _initFuture;
-  bool _isPlaying = false;
-  bool _isMuted = false;
-  bool _showControls = true;
+class _VideoDetailScreenState extends State<VideoDetailScreen>
+    with WidgetsBindingObserver, RouteAware {
   bool _isFullscreen = false;
-  Timer? _hideControlsTimer;
+  Post? _livePost;
+  RealtimeSubscription? _postSub;
+  late final VideoDetailAdsController _adsController;
+  VideoDetailPlaybackController? _playbackController;
+  Map<String, dynamic>? _episodeMeta;
   final TextEditingController _commentController = TextEditingController();
-  final FocusNode _commentFocusNode = FocusNode();
-  bool _isVoiceMode = false;
-  String? _currentUserId;
-  String? _currentUserAvatarUrl;
-  RewardedAd? _rewardedAd;
-  bool _rewardedLoading = false;
-  NativeAd? _nativeAd;
-  bool _nativeLoaded = false;
-  bool _nativeLoading = false;
-  NativeAd? _inlineNativeAd;
-  bool _inlineNativeLoaded = false;
-  bool _inlineNativeLoading = false;
-  bool _showNativeOverlay = false;
-  bool _canDismissNative = false;
-  bool _showRewardedOverlay = false;
-  Timer? _nativeMinTimer;
-  DateTime? _lastTick;
+  bool _isSubmittingComment = false;
+  bool _isCommentsModalOpen = false;
+  NativeAd? _videoAd;
+  NativeAd? _bottomAd;
+  bool _isBottomAdLoaded = false;
+  bool _adActiveInPlayer = false;
+  int _adCountdown = 5;
+  Timer? _adCountdownTimer;
+  static const MethodChannel _adsChannel = MethodChannel('xapzap/ads');
+  bool _lastIsPlaying = false;
+  bool get _adsEnabled =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
+  String get _creatorId {
+    final direct = widget.authorId?.trim();
+    if (direct != null && direct.isNotEmpty) return direct;
+    final source = widget.post.sourceUserId?.trim();
+    if (source != null && source.isNotEmpty) return source;
+    return '';
+  }
+
+  bool _adLoadingInPlayer = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (_adsEnabled) {
+      _adLoadingInPlayer = true;
+    }
     // Allow this screen to rotate into landscape for a better video experience.
     SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.portraitUp,
@@ -78,255 +96,574 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       DeviceOrientation.landscapeRight,
     ]);
 
-    _loadCurrentUser();
-
-    final videoUrl = widget.post.videoUrl;
+    _livePost = widget.post;
+    _adsController = VideoDetailAdsController(
+      postId: widget.post.id,
+      adsEnabled: _adsEnabled,
+      creatorIdProvider: () => _creatorId,
+      startPlayback: () =>
+          _playbackController?.startPlayback() ?? Future.value(),
+      pausePlayback: () =>
+          _playbackController?.pausePlayback() ?? Future.value(),
+    )..addListener(_handleAdsChanged);
+    final videoUrl = widget.post.preferredVideoUrl;
     if (videoUrl != null && videoUrl.isNotEmpty) {
-      _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
-      _initFuture = _controller!.initialize().then((_) {
-        _controller!.addListener(_onVideoTick);
-        if (widget.initialPosition != null) {
-          _controller!.seekTo(widget.initialPosition!);
-        }
-        if (mounted) setState(() {});
-      });
+      _playbackController = VideoDetailPlaybackController(
+        rawVideoUrl: videoUrl,
+        initialPosition: widget.initialPosition,
+        autoPlay: widget.autoPlay,
+        adsEnabled: () => _adsEnabled,
+        rewardedReady: () => _adsController.rewardedReady,
+        showRewarded: ({bool resumePlayback = true}) =>
+            _adsController.showRewarded(resumePlayback: resumePlayback),
+        loadRewarded: _adsController.loadRewarded,
+        loadInlineNative: () {},
+        onViewCounted: () => PostViewRetryQueue.record(widget.post.id, 1),
+      )..addListener(_handlePlaybackChanged);
+      unawaited(_preparePlaybackController());
     }
-    _loadRewarded();
-    _loadInlineNative();
+    _subscribePostRealtime();
+    _loadEpisodeMeta();
+    _loadVideoAd();
+  }
+
+  void _loadVideoAd() {
+    if (!_adsEnabled) return;
+
+    _videoAd = NativeAd(
+      adUnitId: AdHelper.nativeForFeedSlot(999),
+      factoryId: 'cardNative',
+      request: const AdRequest(),
+      nativeAdOptions: NativeAdOptions(
+        videoOptions: VideoOptions(
+          startMuted: false,
+        ),
+      ),
+      customOptions: const <String, Object>{
+        'adId': 'video_details_ad',
+      },
+      listener: NativeAdListener(
+        onAdLoaded: (ad) {
+          if (!mounted) return;
+          setState(() {
+            _adLoadingInPlayer = false;
+            _adActiveInPlayer = true;
+            _adCountdown = 5;
+          });
+          _playbackController?.controller?.pause();
+          _startAdCountdown();
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+          if (mounted) {
+            setState(() {
+              _adLoadingInPlayer = false;
+              _videoAd = null;
+              _adActiveInPlayer = false;
+            });
+            unawaited(_playbackController?.attemptAutoplay() ?? Future.value());
+            _loadBottomAd();
+          }
+        },
+      ),
+    );
+    _videoAd!.load();
+  }
+
+  void _loadBottomAd() {
+    if (!_adsEnabled) return;
+    _isBottomAdLoaded = false;
+    _bottomAd = NativeAd(
+      adUnitId: AdHelper.nativeForFeedSlot(999),
+      factoryId: 'cardNative',
+      request: const AdRequest(),
+      nativeAdOptions: NativeAdOptions(
+        videoOptions: VideoOptions(
+          startMuted: true, // Muted by default
+        ),
+      ),
+      customOptions: const <String, Object>{
+        'adId': 'video_details_bottom_ad',
+      },
+      listener: NativeAdListener(
+        onAdLoaded: (ad) {
+          if (!mounted) return;
+          setState(() {
+            _isBottomAdLoaded = true;
+          });
+          // Delay slightly to let the native AdWidget mount before sending pause command
+          Future.delayed(const Duration(milliseconds: 600), () {
+            if (!mounted) return;
+            _adsChannel.invokeMethod('pauseAdVideo', {'adId': 'video_details_bottom_ad'});
+          });
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+          if (mounted) {
+            setState(() {
+              _bottomAd = null;
+              _isBottomAdLoaded = false;
+            });
+          }
+        },
+      ),
+    );
+    _bottomAd!.load();
+  }
+
+  void _startAdCountdown() {
+    _adCountdownTimer?.cancel();
+    _adCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_adCountdown > 0) {
+        setState(() {
+          _adCountdown--;
+        });
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  void _skipAd() {
+    _adCountdownTimer?.cancel();
+    if (_videoAd != null) {
+      _adsChannel.invokeMethod('pauseAdVideo', {'adId': 'video_details_ad'});
+    }
+    setState(() {
+      _adActiveInPlayer = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _videoAd?.dispose();
+      _videoAd = null;
+      _loadBottomAd();
+    });
+    _playbackController?.playWithGate();
+  }
+
+  Future<void> _loadEpisodeMeta() async {
+    try {
+      final meta = await AppwriteService.fetchEpisodeMetadata(widget.post.id);
+      if (!mounted) return;
+      setState(() {
+        _episodeMeta = meta['isEpisode'] == true ? meta : null;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _preparePlaybackController() async {
+    await GlobalVideoManager.releaseActive();
+    NativeAdPreloadService.releaseAll();
+    final playback = _playbackController;
+    if (playback == null) return;
+    await playback.initialize();
+    if (!mounted) return;
+    if (_adLoadingInPlayer || _adActiveInPlayer) {
+      playback.controller?.pause();
+      return;
+    }
+    if (widget.autoPlay) {
+      playback.queueAutoplayAfterFirstFrame();
+    }
+    if (!_adLoadingInPlayer && !_adActiveInPlayer) {
+      await playback.attemptAutoplay();
+    }
+  }
+
+  void _handleAdsChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _handlePlaybackChanged() {
+    if (!mounted) return;
+    setState(() {});
+
+    final isPlaying = _playbackController?.isPlaying ?? false;
+    if (isPlaying != _lastIsPlaying) {
+      _lastIsPlaying = isPlaying;
+      _adsChannel.invokeMethod('pauseAdVideo', {'adId': 'video_details_bottom_ad'});
+    }
+  }
+
+  void _subscribePostRealtime() {
+    try {
+      final channel =
+          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postsCollectionId}.documents';
+      _postSub = AppwriteService.realtime.subscribe([channel]);
+      _postSub?.stream.listen((event) {
+        if (!mounted || event.events.isEmpty) return;
+        final payload = event.payload;
+        final payloadId =
+            payload[r'$id']?.toString() ?? payload['id']?.toString();
+        if (payloadId != widget.post.id) return;
+        if (event.events.any((e) => e.contains('.delete'))) {
+          return;
+        }
+        setState(() {
+          _livePost = _applyPostPayload(_livePost ?? widget.post, payload);
+        });
+      });
+    } catch (_) {}
+  }
+
+  Post _applyPostPayload(Post base, Map<String, dynamic> data) {
+    int readInt(String key, int fallback) {
+      final raw = data[key];
+      if (raw is int) return raw;
+      return int.tryParse('$raw') ?? fallback;
+    }
+
+    String? readString(String key) {
+      final raw = data[key];
+      if (raw == null) return null;
+      final value = raw.toString().trim();
+      return value.isEmpty ? null : value;
+    }
+
+    return Post(
+      id: base.id,
+      username: readString('username') ?? base.username,
+      userAvatar: readString('userAvatar') ?? base.userAvatar,
+      content: readString('content') ?? base.content,
+      imageUrl: readString('imageUrl') ?? base.imageUrl,
+      videoUrl: readString('videoUrl') ?? base.videoUrl,
+      previewVideoUrl: readString('previewVideoUrl') ?? base.previewVideoUrl,
+      hlsVideoUrl: readString('hlsVideoUrl') ?? base.hlsVideoUrl,
+      postType: readString('postType') ?? base.postType,
+      title: readString('title') ?? base.title,
+      thumbnailUrl: readString('thumbnailUrl') ?? base.thumbnailUrl,
+      timestamp: base.timestamp,
+      likes: readInt('likes', base.likes),
+      comments: readInt('comments', base.comments),
+      reposts: readInt('reposts', base.reposts),
+      impressions: readInt('impressions', base.impressions),
+      views: readInt('views', base.views),
+      isLiked: base.isLiked,
+      isReposted: base.isReposted,
+      isSaved: base.isSaved,
+      sourcePostId: base.sourcePostId,
+      sourceUserId: base.sourceUserId,
+      sourceUsername: base.sourceUsername,
+      textBgColor: base.textBgColor,
+      isBoosted: base.isBoosted,
+      activeBoostId: base.activeBoostId,
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+    }
   }
 
   @override
   void dispose() {
-    _hideControlsTimer?.cancel();
-    _nativeMinTimer?.cancel();
+    _adCountdownTimer?.cancel();
+    _videoAd?.dispose();
+    _bottomAd?.dispose();
+    _commentController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    appRouteObserver.unsubscribe(this);
+    _postSub?.close();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    // Restore the app back to portrait when leaving the video detail screen.
     SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.portraitUp,
     ]);
-    _controller?.removeListener(_onVideoTick);
-    _controller?.dispose();
-    _commentController.dispose();
-    _commentFocusNode.dispose();
-    _nativeAd?.dispose();
-    _inlineNativeAd?.dispose();
-    _rewardedAd?.dispose();
+    final playback = _playbackController;
+    if (playback != null) {
+      playback.removeListener(_handlePlaybackChanged);
+      playback.dispose();
+    }
+    _adsController
+      ..removeListener(_handleAdsChanged)
+      ..dispose();
+    NativeAdPreloadService.releaseAll();
     super.dispose();
+  }
+
+  @override
+  void didPushNext() {
+    // Pause in place so the video stays on the current frame when a
+    // profile or another route is opened on top of this screen.
+    unawaited(_playbackController?.pausePlayback() ?? Future.value());
+    NativeAdPreloadService.releaseAll();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_playbackController?.pausePlayback() ?? Future.value());
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final post = _livePost ?? widget.post;
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
     final showOnlyVideo = _isFullscreen || (isLandscape && !kIsWeb);
     final onSurface = theme.colorScheme.onSurface;
     final surface = theme.colorScheme.surface;
 
-    return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
-      appBar: showOnlyVideo
-          ? null
-          : AppBar(
-              backgroundColor: surface,
-              elevation: 0,
-              iconTheme: IconThemeData(color: onSurface),
-              title: Text(
-                widget.post.title?.isNotEmpty == true ? widget.post.title! : 'Video',
-                style: TextStyle(color: onSurface),
+    return WillPopScope(
+      onWillPop: () async => !_adsController.blockBackNavigation,
+      child: Scaffold(
+        backgroundColor: theme.scaffoldBackgroundColor,
+        appBar: showOnlyVideo
+            ? null
+            : AppBar(
+                backgroundColor: surface,
+                elevation: 0,
+                iconTheme: IconThemeData(color: onSurface),
+                title: Text(
+                  post.title?.isNotEmpty == true ? post.title! : 'Video',
+                  style: TextStyle(color: onSurface),
+                ),
               ),
-            ),
-      body: showOnlyVideo
-          ? Center(child: _buildVideoPlayer(theme))
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final isDesktopWide = kIsWeb && constraints.maxWidth > 1100;
-                if (isDesktopWide) {
+        body: showOnlyVideo
+            ? Center(child: _buildVideoPlayer(theme))
+            : LayoutBuilder(
+                builder: (context, constraints) {
+                  final isDesktopWide = kIsWeb && constraints.maxWidth > 1100;
+                  if (isDesktopWide) {
+                    return Column(
+                      children: [
+                        Expanded(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                flex: 3,
+                                child: Column(
+                                  children: [
+                                    _buildVideoPlayer(theme),
+                                    Expanded(child: _buildMetaSection(theme)),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              SizedBox(
+                                width: constraints.maxWidth * 0.32,
+                                child: _buildSuggestionsSidebar(theme),
+                              ),
+                            ],
+                          ),
+                        ),
+                        _buildBottomAdWidget(theme),
+                        _buildCommentsEntry(),
+                      ],
+                    );
+                  }
                   return Column(
                     children: [
                       Expanded(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Column(
                           children: [
-                            Expanded(
-                              flex: 3,
-                              child: Column(
-                                children: [
-                                  _buildVideoPlayer(theme),
-                                  Expanded(child: _buildMetaSection(theme)),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            SizedBox(
-                              width: constraints.maxWidth * 0.32,
-                              child: _buildSuggestionsSidebar(theme),
-                            ),
+                            _buildVideoPlayer(theme),
+                            Expanded(child: _buildMetaSection(theme)),
                           ],
                         ),
                       ),
-                      _buildCommentInput(),
+                      _buildBottomAdWidget(theme),
+                      _buildCommentsEntry(),
                     ],
                   );
-                }
-                return Column(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        children: [
-                          _buildVideoPlayer(theme),
-                          Expanded(child: _buildMetaSection(theme)),
-                        ],
-                      ),
-                    ),
-                    _buildCommentInput(),
-                  ],
-                );
-              },
-            ),
+                },
+              ),
+      ),
     );
   }
 
   Widget _buildMetaSection(ThemeData theme) {
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(24),
-          topRight: Radius.circular(24),
-        ),
-      ),
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          if (widget.post.title?.trim().isNotEmpty == true)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Text(
-                widget.post.title!.trim(),
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          if (widget.post.content.trim().isNotEmpty)
-            _buildDescriptionPreview(theme),
-          // Use a Post copy with no image so we don't show the thumbnail again.
-          PostCard(
-            post: _copyWithoutImage(widget.post),
-            isGuest: widget.isGuest,
-            onGuestAction: widget.onGuestAction,
-            mediaUrls: const <String>[],
-            authorId: widget.authorId,
-            onOpenPost: null,
-            isDetail: true,
-            // Hide in-card video description; we show
-            // a separate tappable preview below.
-            showVideoMeta: false,
-          ),
-          _buildInlineNativeAd(theme),
-        ],
-      ),
+    final post = _livePost ?? widget.post;
+
+    Widget? bottomAdWidget;
+    if (_bottomAd != null && _isBottomAdLoaded) {
+      final videoAspect = _getVideoAspectRatio();
+      bottomAdWidget = AspectRatio(
+        aspectRatio: videoAspect / 1.2,
+        child: AdWidget(ad: _bottomAd!),
+      );
+    }
+
+    return VideoDetailMetaSection(
+      post: post,
+      authorId: widget.authorId,
+      isGuest: widget.isGuest,
+      onGuestAction: widget.onGuestAction,
+      onOpenDescription: _openDescriptionSheet,
+      adWidget: bottomAdWidget,
+      bottomSection: _episodeMeta != null
+          ? SeriesEpisodeTray(
+              currentPostId: post.id,
+              ownerUserId: ((_episodeMeta!['userId'] as String?) ?? '').trim(),
+              seriesTitle:
+                  ((_episodeMeta!['seriesTitle'] as String?) ?? '').trim(),
+              contentType:
+                  ((_episodeMeta!['episodeContentType'] as String?) ?? 'video')
+                      .trim()
+                      .toLowerCase(),
+            )
+          : null,
     );
   }
 
-  Widget _buildDescriptionPreview(ThemeData theme) {
-    final description = widget.post.content.trim();
-    if (description.isEmpty) return const SizedBox.shrink();
+  Widget _buildBottomAdWidget(ThemeData theme) {
+    return const SizedBox.shrink();
+  }
 
-    const maxChars = 100;
-    var snippet = description;
-    var truncated = false;
-    if (snippet.length > maxChars) {
-      snippet = snippet.substring(0, maxChars);
-      truncated = true;
+  double _getVideoAspectRatio() {
+    final controller = _playbackController?.controller;
+    if (controller != null && controller.value.isInitialized) {
+      final ratio = controller.value.aspectRatio;
+      return ratio > 0 ? ratio : 16 / 9;
     }
+    return 16 / 9;
+  }
 
-    return InkWell(
-      onTap: _openDescriptionSheet,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Description',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: theme.colorScheme.onSurface.withOpacity(0.7),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    snippet + (truncated ? '...' : ''),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: theme.colorScheme.onSurface,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Icon(
-                  Icons.expand_less, // small hint that it expands
-                  size: 16,
-                  color: theme.colorScheme.onSurface.withOpacity(0.7),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
+  double get _adContainerAspectRatio {
+    final videoAspect = _getVideoAspectRatio();
+    // Match the video resolution ratio, slightly adjusted (divided by 1.2 to increase height by 20%) to fit ad components perfectly.
+    return videoAspect / 1.2;
   }
 
   Widget _buildVideoPlayer(ThemeData theme) {
-    if (_controller == null) {
-      return const SizedBox(
+    if (_adActiveInPlayer && _videoAd != null) {
+      final screenHeight = MediaQuery.of(context).size.height;
+      return ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: screenHeight * 0.5,
+        ),
+        child: AspectRatio(
+          aspectRatio: _adContainerAspectRatio,
+          child: Container(
+            color: Colors.black,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: AdWidget(ad: _videoAd!),
+                ),
+                Positioned(
+                  bottom: 12,
+                  right: 12,
+                  child: GestureDetector(
+                    onTap: _adCountdown == 0 ? _skipAd : null,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.8),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.white24, width: 1),
+                      ),
+                      child: Text(
+                        _adCountdown > 0 ? 'Skip in $_adCountdown...' : 'Skip Ad',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final playback = _playbackController;
+    final controller = playback?.controller;
+    if (playback != null && controller == null) {
+      if (playback.hasError) {
+        return SizedBox(
+          height: 240,
+          child: Center(
+            child: Text(
+              'Video not available',
+              style: TextStyle(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        );
+      }
+      return Container(
+        height: 240,
+        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.35),
+        child: Center(
+          child: CircularProgressIndicator(
+            color: theme.colorScheme.primary,
+          ),
+        ),
+      );
+    }
+
+    if (controller == null) {
+      return SizedBox(
         height: 240,
         child: Center(
           child: Text(
             'Video not available',
-            style: TextStyle(color: Colors.white70),
+            style: TextStyle(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       );
     }
     return FutureBuilder<void>(
-      future: _initFuture,
+      future: playback?.initFuture,
       builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done || !_controller!.value.isInitialized) {
-          return const SizedBox(
+        if (!controller.value.isInitialized) {
+          if (widget.autoPlay &&
+              !(playback?.autoplayQueued ?? false) &&
+              !_adLoadingInPlayer &&
+              !_adActiveInPlayer) {
+            playback?.queueAutoplayAfterFirstFrame();
+          }
+          return Container(
             height: 240,
+            color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.35),
             child: Center(
-              child: CircularProgressIndicator(color: Colors.white),
+              child: CircularProgressIndicator(
+                color: theme.colorScheme.primary,
+              ),
             ),
           );
         }
-        final aspect = _controller!.value.aspectRatio == 0 ? 16 / 9 : _controller!.value.aspectRatio;
+        if (widget.autoPlay &&
+            !(playback?.autoplayQueued ?? false) &&
+            !(playback?.autoplayAttempted ?? false) &&
+            !_adLoadingInPlayer &&
+            !_adActiveInPlayer) {
+          playback?.queueAutoplayAfterFirstFrame();
+        }
+        final aspect = controller.value.aspectRatio == 0
+            ? 16 / 9
+            : controller.value.aspectRatio;
         return Stack(
           alignment: Alignment.center,
           children: [
-            GestureDetector(
-              onTap: () {
-                setState(() {
-                  _showControls = !_showControls;
-                });
-                if (_showControls) {
-                  _scheduleHideControls();
-                } else {
-                  _hideControlsTimer?.cancel();
-                }
+            TvFocusableAction(
+              onPressed: () {
+                playback?.toggleControlsVisibility();
               },
               child: AspectRatio(
                 aspectRatio: aspect,
-                child: VideoPlayer(_controller!),
+                child: VideoPlayer(controller),
               ),
             ),
             // Top icons: fullscreen (left) and speaker (right), auto-hidden.
@@ -334,20 +671,24 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               top: 12,
               left: 12,
               child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
+                opacity: playback?.showControls == true ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 200),
                 child: IgnorePointer(
-                  ignoring: !_showControls,
+                  ignoring: !(playback?.showControls ?? false),
                   child: _buildControlButton(
-                    icon: _isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                    icon: _isFullscreen
+                        ? Icons.fullscreen_exit
+                        : Icons.fullscreen,
                     onTap: () {
                       setState(() => _isFullscreen = !_isFullscreen);
                       if (_isFullscreen) {
-                        SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+                        SystemChrome.setEnabledSystemUIMode(
+                            SystemUiMode.immersiveSticky);
                       } else {
-                        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+                        SystemChrome.setEnabledSystemUIMode(
+                            SystemUiMode.edgeToEdge);
                       }
-                      _scheduleHideControls();
+                      playback?.scheduleHideControls();
                     },
                   ),
                 ),
@@ -357,19 +698,17 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               top: 12,
               right: 12,
               child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
+                opacity: playback?.showControls == true ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 200),
                 child: IgnorePointer(
-                  ignoring: !_showControls,
+                  ignoring: !(playback?.showControls ?? false),
                   child: _buildControlButton(
-                    icon: _isMuted ? Icons.volume_off : Icons.volume_up,
+                    icon: playback?.isMuted == true
+                        ? Icons.volume_off
+                        : Icons.volume_up,
                     onTap: () {
-                      if (_controller == null) return;
-                      setState(() {
-                        _isMuted = !_isMuted;
-                        _controller!.setVolume(_isMuted ? 0.0 : 1.0);
-                      });
-                      _scheduleHideControls();
+                      if (playback == null) return;
+                      playback.setMuted(!playback.isMuted);
                     },
                   ),
                 ),
@@ -377,10 +716,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
             ),
             // Center controls: back / play-pause / forward, auto-hidden in the middle.
             AnimatedOpacity(
-              opacity: _showControls ? 1.0 : 0.0,
+              opacity: playback?.showControls == true ? 1.0 : 0.0,
               duration: const Duration(milliseconds: 200),
               child: IgnorePointer(
-                ignoring: !_showControls,
+                ignoring: !(playback?.showControls ?? false),
                 child: Center(
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -388,30 +727,26 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                       _buildControlButton(
                         icon: Icons.replay_10,
                         onTap: () {
-                          _seekRelative(const Duration(seconds: -10));
-                          _scheduleHideControls();
+                          playback?.seekRelative(const Duration(seconds: -10));
+                          playback?.scheduleHideControls();
                         },
                       ),
                       const SizedBox(width: 40),
                       _buildControlButton(
-                        icon: _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                        onTap: () async {
-                          if (_controller == null) return;
-                          if (_controller!.value.isPlaying) {
-                            await _controller!.pause();
-                            if (mounted) setState(() => _isPlaying = false);
-                            _hideControlsTimer?.cancel();
-                          } else {
-                            await _playWithGate();
-                          }
-                        },
+                        icon: playback?.playbackCompleted == true &&
+                                !(playback?.isPlaying ?? false)
+                            ? Icons.replay_circle_filled
+                            : ((playback?.isPlaying ?? false)
+                                ? Icons.pause_circle_filled
+                                : Icons.play_circle_fill),
+                        onTap: () async => playback?.togglePrimaryAction(),
                       ),
                       const SizedBox(width: 40),
                       _buildControlButton(
                         icon: Icons.forward_10,
                         onTap: () {
-                          _seekRelative(const Duration(seconds: 10));
-                          _scheduleHideControls();
+                          playback?.seekRelative(const Duration(seconds: 10));
+                          playback?.scheduleHideControls();
                         },
                       ),
                     ],
@@ -425,10 +760,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               right: 0,
               bottom: 0,
               child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
+                opacity: playback?.showControls == true ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 200),
                 child: IgnorePointer(
-                  ignoring: !_showControls,
+                  ignoring: !(playback?.showControls ?? false),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -438,15 +773,16 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                           alignment: Alignment.centerRight,
                           child: Text(
                             _formatDuration(
-                              _controller!.value.position,
-                              _controller!.value.duration,
+                              controller.value.position,
+                              controller.value.duration,
                             ),
-                            style: const TextStyle(color: Colors.white, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12),
                           ),
                         ),
                       ),
                       VideoProgressIndicator(
-                        _controller!,
+                        controller,
                         allowScrubbing: true,
                         padding: const EdgeInsets.only(bottom: 4),
                         colors: const VideoProgressColors(
@@ -460,7 +796,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 ),
               ),
             ),
-            if (_showRewardedOverlay || _showNativeOverlay)
+            if (_adsController.showRewardedOverlay)
               Positioned.fill(
                 child: Container(
                   color: Colors.black.withOpacity(0.7),
@@ -468,7 +804,9 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                     child: LayoutBuilder(
                       builder: (context, constraints) {
                         final screenH = MediaQuery.of(context).size.height;
-                        final maxH = constraints.maxHeight.isFinite ? constraints.maxHeight : screenH;
+                        final maxH = constraints.maxHeight.isFinite
+                            ? constraints.maxHeight
+                            : screenH;
                         final usableH = (maxH - 48).clamp(120.0, maxH);
                         final adHeight = (usableH * 0.6).clamp(120.0, usableH);
                         return Material(
@@ -483,29 +821,22 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                                   SizedBox(
                                     height: adHeight,
                                     width: double.infinity,
-                                    child: _showRewardedOverlay
-                                        ? const Center(
-                                            child: Text(
-                                              'Ad playing...',
-                                              style: TextStyle(color: Colors.white),
-                                            ),
-                                          )
-                                        : (_nativeLoaded && _nativeAd != null
-                                            ? ClipRRect(
-                                                borderRadius: BorderRadius.circular(8),
-                                                child: AdWidget(key: UniqueKey(), ad: _nativeAd!),
-                                              )
-                                            : const SizedBox.shrink()),
+                                    child: const Center(
+                                      child: Text(
+                                        'Loading ads...',
+                                        style: TextStyle(color: Colors.white),
+                                      ),
+                                    ),
                                   ),
                                   const SizedBox(height: 8),
                                   const Text(
-                                    'Ad playing... video will resume',
+                                    'Loading ads... video will resume',
                                     style: TextStyle(color: Colors.white),
                                   ),
                                   const SizedBox(height: 8),
-                                  if (!_showRewardedOverlay)
+                                  if (!_adsController.showRewardedOverlay)
                                     ElevatedButton(
-                                      onPressed: _canDismissNative ? _closeNativeOverlay : null,
+                                      onPressed: null,
                                       child: const Text('Continue'),
                                     ),
                                 ],
@@ -526,7 +857,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
   void _openDescriptionSheet() {
     final theme = Theme.of(context);
-    final description = widget.post.content.trim();
+    final description = (_livePost ?? widget.post).content.trim();
     if (description.isEmpty) return;
 
     showModalBottomSheet<void>(
@@ -564,12 +895,24 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 const SizedBox(height: 8),
                 Expanded(
                   child: SingleChildScrollView(
-                    child: Text(
-                      description,
-                      style: TextStyle(
-                        fontSize: 14,
-                        height: 1.4,
-                        color: theme.colorScheme.onSurface,
+                    child: Text.rich(
+                      TextSpan(
+                        style: TextStyle(
+                          fontSize: 14,
+                          height: 1.4,
+                          color: theme.colorScheme.onSurface,
+                        ),
+                        children: buildTaggableSpans(
+                          context,
+                          description,
+                          TextStyle(
+                            fontSize: 14,
+                            height: 1.4,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                          null,
+                          null,
+                        ),
                       ),
                     ),
                   ),
@@ -582,9 +925,11 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     );
   }
 
-  Widget _buildControlButton({required IconData icon, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
+  Widget _buildControlButton(
+      {required IconData icon, required VoidCallback onTap}) {
+    return TvFocusableAction(
+      onPressed: onTap,
+      borderRadius: BorderRadius.circular(999),
       child: Container(
         decoration: BoxDecoration(
           color: Colors.black54,
@@ -593,232 +938,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         child: Padding(
           padding: const EdgeInsets.all(6.0),
           child: Icon(icon, color: Colors.white, size: 35),
-        ),
-      ),
-    );
-  }
-
-  void _seekRelative(Duration offset) {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    final current = _controller!.value.position;
-    final target = current + offset;
-    // Manually clamp because some SDKs don't support Duration.clamp.
-    final total = _controller!.value.duration;
-    Duration clamped;
-    if (target < Duration.zero) {
-      clamped = Duration.zero;
-    } else if (target > total) {
-      clamped = total;
-    } else {
-      clamped = target;
-    }
-    _controller!.seekTo(clamped);
-  }
-
-  void _scheduleHideControls() {
-    _hideControlsTimer?.cancel();
-    if (kIsWeb) {
-      if (!_showControls) {
-        setState(() => _showControls = true);
-      }
-      return;
-    }
-    if (!_isPlaying) {
-      setState(() => _showControls = true);
-      return;
-    }
-    setState(() => _showControls = true);
-    _hideControlsTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      if (_isPlaying) {
-        setState(() => _showControls = false);
-      }
-    });
-  }
-
-  void _onVideoTick() {
-    if (!mounted || _controller == null) return;
-    final now = DateTime.now();
-    if (_lastTick != null && now.difference(_lastTick!).inMilliseconds < 500) return;
-    _lastTick = now;
-    setState(() {});
-  }
-
-  Future<void> _playWithGate() async {
-    if (_controller == null) return;
-    final needsRewarded = await AdFrequencyService.shouldShowRewarded(widget.post.id);
-    if (needsRewarded) {
-      await _showRewarded();
-    } else {
-      await _showNative();
-    }
-  }
-
-  Future<void> _startPlayback() async {
-    if (_controller == null) return;
-    await _controller!.play();
-    if (mounted) {
-      setState(() => _isPlaying = true);
-      _scheduleHideControls();
-    }
-  }
-
-  void _loadRewarded() {
-    if (_rewardedLoading || _rewardedAd != null) return;
-    _rewardedLoading = true;
-    RewardedAd.load(
-      adUnitId: AdHelper.rewarded,
-      request: const AdRequest(),
-      rewardedAdLoadCallback: RewardedAdLoadCallback(
-        onAdLoaded: (ad) {
-          _rewardedAd = ad;
-          _rewardedLoading = false;
-        },
-        onAdFailedToLoad: (_) {
-          _rewardedAd = null;
-          _rewardedLoading = false;
-        },
-      ),
-    );
-  }
-
-  void _loadInlineNative() {
-    if (_inlineNativeLoading || _inlineNativeAd != null) return;
-    if (kIsWeb || !Platform.isAndroid) return;
-    _inlineNativeLoading = true;
-    _inlineNativeAd = NativeAd(
-      adUnitId: AdHelper.native,
-      factoryId: 'cardNative',
-      request: const AdRequest(),
-      listener: NativeAdListener(
-        onAdLoaded: (ad) {
-          if (!mounted) return;
-          setState(() {
-            _inlineNativeLoaded = true;
-            _inlineNativeLoading = false;
-          });
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          if (!mounted) return;
-          setState(() {
-            _inlineNativeAd = null;
-            _inlineNativeLoaded = false;
-            _inlineNativeLoading = false;
-          });
-        },
-      ),
-    )..load();
-  }
-
-  Future<void> _showRewarded() async {
-    final ad = _rewardedAd;
-    if (ad == null) {
-      _loadRewarded();
-      await _startPlayback();
-      return;
-    }
-    setState(() => _showRewardedOverlay = true);
-    final completer = Completer<void>();
-    ad.fullScreenContentCallback = FullScreenContentCallback(
-      onAdDismissedFullScreenContent: (ad) {
-        ad.dispose();
-        _rewardedAd = null;
-        _loadRewarded();
-        setState(() => _showRewardedOverlay = false);
-        completer.complete();
-      },
-      onAdFailedToShowFullScreenContent: (ad, _) {
-        ad.dispose();
-        _rewardedAd = null;
-        _loadRewarded();
-        setState(() => _showRewardedOverlay = false);
-        completer.complete();
-      },
-    );
-    ad.show(onUserEarnedReward: (_, reward) {});
-    await completer.future;
-    await AdFrequencyService.markRewarded(widget.post.id);
-    setState(() => _showRewardedOverlay = false);
-    await _startPlayback();
-  }
-
-  Future<void> _showNative() async {
-    if (kIsWeb || !Platform.isAndroid) {
-      await _startPlayback();
-      return;
-    }
-    if (_nativeLoading) return;
-    _nativeLoading = true;
-    _nativeLoaded = false;
-    _nativeAd?.dispose();
-    _nativeAd = NativeAd(
-      adUnitId: AdHelper.native,
-      factoryId: 'cardNative',
-      request: const AdRequest(),
-      listener: NativeAdListener(
-        onAdLoaded: (ad) {
-          if (!mounted) return;
-          setState(() {
-            _nativeLoaded = true;
-            _nativeLoading = false;
-            _showNativeOverlay = true;
-            _canDismissNative = false;
-          });
-          _nativeMinTimer?.cancel();
-          _nativeMinTimer = Timer(const Duration(seconds: 2), () {
-            if (!mounted) return;
-            setState(() => _canDismissNative = true);
-          });
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          if (!mounted) return;
-          setState(() {
-            _nativeAd = null;
-            _nativeLoading = false;
-            _showNativeOverlay = false;
-          });
-          _startPlayback();
-        },
-      ),
-    )..load();
-    setState(() {
-      _showNativeOverlay = true;
-      _canDismissNative = false;
-    });
-  }
-
-  void _closeNativeOverlay() {
-    setState(() {
-      _showNativeOverlay = false;
-    });
-    _startPlayback();
-  }
-
-  Widget _buildInlineNativeAd(ThemeData theme) {
-    if (kIsWeb || !Platform.isAndroid) return const SizedBox.shrink();
-    if (_inlineNativeAd == null && !_inlineNativeLoading) {
-      _loadInlineNative();
-    }
-    if (_inlineNativeAd == null || !_inlineNativeLoaded) {
-      return const SizedBox.shrink();
-    }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Container(
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: theme.colorScheme.outlineVariant, width: 0.5),
-        ),
-        padding: const EdgeInsets.all(12),
-        child: SizedBox(
-          height: 240,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: AdWidget(key: UniqueKey(), ad: _inlineNativeAd!),
-          ),
         ),
       ),
     );
@@ -857,168 +976,100 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     );
   }
 
-  Future<void> _loadCurrentUser() async {
-    final user = await AppwriteService.getCurrentUser();
-    if (user == null) {
-      if (!mounted) return;
-      setState(() {
-        _currentUserId = null;
-        _currentUserAvatarUrl = null;
-      });
-      return;
+  Widget _buildCommentsEntry() {
+    if (_isCommentsModalOpen) {
+      return const SizedBox.shrink();
     }
-    final prof = await AppwriteService.getProfileByUserId(user.$id);
-    String? avatar = prof?.data['avatarUrl'] as String?;
-    if (avatar != null && avatar.isNotEmpty && !avatar.startsWith('http')) {
-      try {
-        avatar = await WasabiService.getSignedUrl(avatar);
-      } catch (_) {}
-    }
-    if (!mounted) return;
-    setState(() {
-      _currentUserId = user.$id;
-      _currentUserAvatarUrl = avatar;
-    });
-  }
-
-  Widget _buildCommentInput() {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final bgColor = theme.scaffoldBackgroundColor;
-    final inputFillColor = isDark ? const Color(0xFF111827) : Colors.grey[100];
-    final textColor = theme.textTheme.bodyMedium?.color ?? Colors.black;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: bgColor,
-      child: SafeArea(
-        top: false,
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: Colors.grey[200],
-              backgroundImage: _currentUserAvatarUrl != null &&
-                      _currentUserAvatarUrl!.isNotEmpty
-                  ? NetworkImage(_currentUserAvatarUrl!)
-                  : null,
-              child: (_currentUserAvatarUrl == null ||
-                      _currentUserAvatarUrl!.isEmpty)
-                  ? const Icon(Icons.person, color: Colors.grey)
-                  : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _isVoiceMode
-                  ? VoiceRecorder(onRecorded: _handleVoiceRecorded)
-                  : TextField(
-                      controller: _commentController,
-                      focusNode: _commentFocusNode,
-                      decoration: InputDecoration(
-                        hintText: 'Add a comment...',
-                        hintStyle: TextStyle(color: textColor.withOpacity(0.6)),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide.none,
-                        ),
-                        filled: true,
-                        fillColor: inputFillColor,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-                      ),
-                      style: TextStyle(color: textColor, fontSize: 16),
-                      onSubmitted: _submitComment,
-                    ),
-            ),
-            if (!_isVoiceMode) ...[
-              IconButton(
-                icon: const Icon(LucideIcons.mic, color: Color(0xFF1DA1F2)),
-                onPressed: () {
-                  if (_currentUserId == null || widget.isGuest) {
-                    widget.onGuestAction?.call();
-                    return;
-                  }
-                  setState(() => _isVoiceMode = true);
-                },
-              ),
-              IconButton(
-                icon: const Icon(LucideIcons.send, color: Color(0xFF1DA1F2)),
-                onPressed: () => _submitComment(_commentController.text),
-              ),
-            ],
-          ],
-        ),
-      ),
+    final post = _livePost ?? widget.post;
+    return VideoDetailCommentsBar(
+      commentCount: post.comments,
+      controller: _commentController,
+      isSubmitting: _isSubmittingComment,
+      onSubmitted: _submitComment,
+      onCommentIconTap: _openCommentsModal,
     );
   }
 
-  Future<void> _submitComment(String text) async {
-    final content = text.trim();
-    if (content.isEmpty) return;
+  Future<void> _submitComment() async {
+    final text = _commentController.text.trim();
+    if (text.isEmpty || _isSubmittingComment) return;
     if (widget.isGuest) {
       widget.onGuestAction?.call();
       return;
     }
+
+    setState(() => _isSubmittingComment = true);
     try {
-      await AppwriteService.createComment(widget.post.id, content);
-      await AppwriteService.incrementPostComments(widget.post.id, 1);
+      await AppwriteService.createComment(widget.post.id, text);
+      unawaited(AppwriteService.incrementPostComments(widget.post.id, 1));
+
       if (!mounted) return;
-      _commentController.clear();
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Comment posted')));
+      final currentPost = _livePost ?? widget.post;
+      setState(() {
+        _livePost = Post(
+          id: currentPost.id,
+          username: currentPost.username,
+          userAvatar: currentPost.userAvatar,
+          content: currentPost.content,
+          imageUrl: currentPost.imageUrl,
+          videoUrl: currentPost.videoUrl,
+          previewVideoUrl: currentPost.previewVideoUrl,
+          hlsVideoUrl: currentPost.hlsVideoUrl,
+          postType: currentPost.postType,
+          title: currentPost.title,
+          thumbnailUrl: currentPost.thumbnailUrl,
+          timestamp: currentPost.timestamp,
+          likes: currentPost.likes,
+          comments: currentPost.comments + 1,
+          reposts: currentPost.reposts,
+          impressions: currentPost.impressions,
+          views: currentPost.views,
+          isLiked: currentPost.isLiked,
+          isReposted: currentPost.isReposted,
+          isSaved: currentPost.isSaved,
+          sourcePostId: currentPost.sourcePostId,
+          sourceUserId: currentPost.sourceUserId,
+          sourceUsername: currentPost.sourceUsername,
+          textBgColor: currentPost.textBgColor,
+          isBoosted: currentPost.isBoosted,
+          activeBoostId: currentPost.activeBoostId,
+        );
+        _commentController.clear();
+        _isSubmittingComment = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Comment posted.')),
+      );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed to comment: $e')));
+      setState(() => _isSubmittingComment = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to post comment. Please try again.')),
+      );
     }
   }
 
-  Future<void> _handleVoiceRecorded(String? path) async {
-    setState(() => _isVoiceMode = false);
-    if (path == null || _currentUserId == null) return;
-    final scaffoldMessenger = ScaffoldMessenger.of(context);
-    try {
-      final voiceUrl = await WasabiService.uploadVoiceComment(path, _currentUserId!);
-      if (voiceUrl == null) return;
+  void _openCommentsModal() async {
+    setState(() {
+      _isCommentsModalOpen = true;
+    });
 
-      await AppwriteService.createVoiceComment(widget.post.id, voiceUrl);
-      await AppwriteService.incrementPostComments(widget.post.id, 1);
+    FocusScope.of(context).unfocus();
 
-      if (!mounted) return;
-      scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Voice comment posted!')));
-    } catch (e) {
-      if (!mounted) return;
-      scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Failed to post voice comment.')));
-    }
-  }
-
-  String _formatDuration(Duration position, Duration total) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    final posMinutes = two(position.inMinutes.remainder(60));
-    final posSeconds = two(position.inSeconds.remainder(60));
-    final totMinutes = two(total.inMinutes.remainder(60));
-    final totSeconds = two(total.inSeconds.remainder(60));
-    return '$posMinutes:$posSeconds / $totMinutes:$totSeconds';
-  }
-
-  Post _copyWithoutImage(Post original) {
-    return Post(
-      id: original.id,
-      username: original.username,
-      userAvatar: original.userAvatar,
-      content: original.content,
-      imageUrl: null,
-      videoUrl: original.videoUrl,
-      kind: original.kind,
-      title: original.title,
-      thumbnailUrl: original.thumbnailUrl,
-      timestamp: original.timestamp,
-      likes: original.likes,
-      comments: original.comments,
-      reposts: original.reposts,
-      impressions: original.impressions,
-      views: original.views,
-      isLiked: original.isLiked,
-      isReposted: original.isReposted,
-      isSaved: original.isSaved,
+    await showCommentModal(
+      context,
+      post: _livePost ?? widget.post,
+      isGuest: widget.isGuest,
+      onGuestAction: widget.onGuestAction,
     );
+
+    if (mounted) {
+      setState(() {
+        _isCommentsModalOpen = false;
+      });
+    }
   }
+
+  String _formatDuration(Duration position, Duration total) =>
+      _playbackController?.formatDuration(position, total) ?? '';
 }

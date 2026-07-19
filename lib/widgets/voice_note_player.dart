@@ -39,7 +39,7 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
       await _player.stopPlayer();
       if (mounted) setState(() => _playing = false);
     } else {
-      final signed = await WasabiService.getSignedUrl(widget.url);
+      final signed = await StorageService.getSignedUrl(widget.url);
       await _player.startPlayer(fromURI: signed, codec: Codec.defaultCodec, whenFinished: () {
         if (mounted) setState(() => _playing = false);
       });
@@ -68,3 +68,4 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
     );
   }
 }
+

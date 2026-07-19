@@ -1,7 +1,7 @@
 name: xapzap
 description: "XapZap. A cross-platform social media application."
 publish_to: 'none'
-version: 0.1.0
+version: 30.0.0+31
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  camera: ^0.11.0+2
   video_trimmer: ^5.0.0
   path_provider: ^2.1.4
   cupertino_icons: ^1.0.8
@@ -17,7 +18,9 @@ dependencies:
   image_picker: ^1.1.2
   video_player: ^2.8.6
   cached_network_image: ^3.3.1
+  flutter_cache_manager: ^3.4.1
   appwrite: ^20.3.0
+  connectivity_plus: ^6.0.3
   minio: ^3.5.8
   path: ^1.9.0
   lucide_icons: ^0.257.0
@@ -32,9 +35,17 @@ dependencies:
   video_thumbnail: ^0.5.3
   cryptography: ^2.5.0
   flutter_secure_storage: ^9.0.0
+  firebase_core: ^3.13.0
+  firebase_analytics: ^11.4.4
+  firebase_messaging: ^15.2.5
+  flutter_local_notifications: ^18.0.1
   google_mobile_ads: ^5.1.0
   flutter_native_splash: ^2.4.1
   flutterwave_standard: ^1.0.7
+  url_launcher: ^6.3.0
+  permission_handler_windows: ^0.2.1
+  in_app_update: ^4.2.5
+  package_info_plus: ^9.0.1
 
 dev_dependencies:
   flutter_test:
@@ -46,6 +57,7 @@ flutter:
   uses-material-design: true
   assets:
     # App icon (first image – white rounded background)
+    - .env
     - assets/icons/xapzap_app_icon.png
     # Splash icon (second image – transparent background)
     - assets/icons/xapzap_splash_icon.png

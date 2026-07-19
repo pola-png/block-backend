@@ -1,1 +1,1 @@
-enum UploadType { standard, video, reel, news }
+enum UploadType { standard, video, reel, episode, news }

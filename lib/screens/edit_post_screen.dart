@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../models/post.dart';
 import '../services/appwrite_service.dart';
 
@@ -38,8 +39,10 @@ class _EditPostScreenState extends State<EditPostScreen> {
       final Map<String, dynamic> update = {
         'content': content,
       };
-      final kindLower = (widget.post.kind ?? '').toLowerCase();
-      if (kindLower.contains('video') || kindLower.contains('news') || kindLower.contains('blog')) {
+      final postTypeLower = (widget.post.postType ?? '').toLowerCase();
+      if (postTypeLower.contains('video') ||
+          postTypeLower.contains('news') ||
+          postTypeLower.contains('blog')) {
         update['title'] = _titleController.text.trim();
       }
       await AppwriteService.updateRow(
@@ -49,10 +52,12 @@ class _EditPostScreenState extends State<EditPostScreen> {
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update post: $e')),
+        const SnackBar(
+          content: Text('Failed to update post. Please try again.'),
+        ),
       );
     } finally {
       if (mounted) {
@@ -64,9 +69,10 @@ class _EditPostScreenState extends State<EditPostScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final kindLower = (widget.post.kind ?? '').toLowerCase();
-    final showTitleField =
-        kindLower.contains('video') || kindLower.contains('news') || kindLower.contains('blog');
+    final postTypeLower = (widget.post.postType ?? '').toLowerCase();
+    final showTitleField = postTypeLower.contains('video') ||
+        postTypeLower.contains('news') ||
+        postTypeLower.contains('blog');
 
     return Scaffold(
       appBar: AppBar(
@@ -121,7 +127,8 @@ class _EditPostScreenState extends State<EditPostScreen> {
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                         filled: true,
-                        fillColor: theme.colorScheme.surfaceVariant.withOpacity(0.25),
+                        fillColor:
+                            theme.colorScheme.surfaceVariant.withOpacity(0.25),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(18),
                           borderSide: BorderSide.none,
@@ -143,7 +150,8 @@ class _EditPostScreenState extends State<EditPostScreen> {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                       filled: true,
-                      fillColor: theme.colorScheme.surfaceVariant.withOpacity(0.25),
+                      fillColor:
+                          theme.colorScheme.surfaceVariant.withOpacity(0.25),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(22),
                         borderSide: BorderSide.none,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import '../screens/hashtag_feed_screen.dart';
 
 class TaggableExpandableText extends StatefulWidget {
   final String text;
@@ -8,6 +9,8 @@ class TaggableExpandableText extends StatefulWidget {
   final void Function(String tag)? onHashtagTap;
   final int maxLines;
   final TextAlign textAlign;
+  final String expandLabel;
+  final String collapseLabel;
 
   const TaggableExpandableText({
     super.key,
@@ -17,6 +20,8 @@ class TaggableExpandableText extends StatefulWidget {
     this.onHashtagTap,
     this.maxLines = 3,
     this.textAlign = TextAlign.start,
+    this.expandLabel = 'See more',
+    this.collapseLabel = 'See less',
   });
 
   @override
@@ -44,6 +49,7 @@ class _TaggableExpandableTextState extends State<TaggableExpandableText> {
             Text.rich(
               TextSpan(
                 children: buildTaggableSpans(
+                  context,
                   widget.text,
                   widget.style,
                   widget.onMentionTap,
@@ -62,7 +68,7 @@ class _TaggableExpandableTextState extends State<TaggableExpandableText> {
                 child: Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Text(
-                    _expanded ? 'See less' : 'See more',
+                    _expanded ? widget.collapseLabel : widget.expandLabel,
                     style: TextStyle(
                       color: const Color(0xFF1DA1F2),
                       fontSize: (widget.style.fontSize ?? 16) * 0.85,
@@ -79,11 +85,13 @@ class _TaggableExpandableTextState extends State<TaggableExpandableText> {
 }
 
 List<InlineSpan> buildTaggableSpans(
+  BuildContext context,
   String text,
   TextStyle baseStyle,
   void Function(String username)? onMentionTap,
   void Function(String tag)? onHashtagTap,
 ) {
+  final tagColor = Theme.of(context).colorScheme.primary;
   final spans = <InlineSpan>[];
   final regex = RegExp(r'([@#][A-Za-z0-9_]+)');
   int start = 0;
@@ -98,7 +106,7 @@ List<InlineSpan> buildTaggableSpans(
         TextSpan(
           text: token,
           style: baseStyle.copyWith(
-            color: const Color(0xFF1DA1F2),
+            color: tagColor,
             fontWeight: FontWeight.w600,
           ),
           recognizer: onMentionTap == null
@@ -111,12 +119,22 @@ List<InlineSpan> buildTaggableSpans(
         TextSpan(
           text: token,
           style: baseStyle.copyWith(
-            color: const Color(0xFF1DA1F2),
+            color: tagColor,
             fontWeight: FontWeight.w600,
           ),
-          recognizer: onHashtagTap == null
-              ? null
-              : (TapGestureRecognizer()..onTap = () => onHashtagTap(token)),
+          recognizer: (TapGestureRecognizer()
+            ..onTap = () {
+              final clean = token.startsWith('#') ? token.substring(1) : token;
+              if (onHashtagTap != null) {
+                onHashtagTap(token);
+                return;
+              }
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => HashtagFeedScreen(tag: clean),
+                ),
+              );
+            }),
         ),
       );
     }

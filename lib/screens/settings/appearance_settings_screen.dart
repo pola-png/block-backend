@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import '../../providers/theme_provider.dart';
+import '../../widgets/tv_focusable_action.dart';
 
 class AppearanceSettingsScreen extends StatefulWidget {
   const AppearanceSettingsScreen({super.key});
@@ -13,40 +14,18 @@ class AppearanceSettingsScreen extends StatefulWidget {
 class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      body: Column(
-        children: [
-          _buildHeader(),
-          Expanded(
-            child: _buildThemeOptions(),
-          ),
-        ],
+      backgroundColor: theme.scaffoldBackgroundColor,
+      appBar: AppBar(
+        title: const Text('Appearance'),
+        centerTitle: true,
+        backgroundColor: theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface,
+        foregroundColor: theme.appBarTheme.foregroundColor ?? theme.colorScheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
       ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Container(
-      height: 56,
-      padding: const EdgeInsets.fromLTRB(16, 44, 16, 0),
-      decoration: BoxDecoration(
-        color: Theme.of(context).appBarTheme.backgroundColor,
-        border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor, width: 1)),
-      ),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: () => Navigator.pop(context),
-            child: Icon(LucideIcons.arrowLeft, size: 20, color: Theme.of(context).appBarTheme.foregroundColor),
-          ),
-          const SizedBox(width: 16),
-          Text(
-            'Appearance',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Theme.of(context).appBarTheme.foregroundColor),
-          ),
-        ],
-      ),
+      body: _buildThemeOptions(),
     );
   }
 
@@ -92,18 +71,20 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
 
   Widget _buildThemeOption(ThemeProvider themeProvider, ThemeMode mode, String title, String description, IconData icon) {
     final isSelected = themeProvider.themeMode == mode;
+    final theme = Theme.of(context);
 
-    return GestureDetector(
-      onTap: () => themeProvider.setThemeMode(mode),
+    return TvFocusableAction(
+      onPressed: () => themeProvider.setThemeMode(mode),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           border: Border.all(
-            color: isSelected ? const Color(0xFF29ABE2) : Theme.of(context).dividerColor,
+            color: isSelected ? theme.colorScheme.primary : theme.dividerColor,
             width: isSelected ? 2 : 1,
           ),
           borderRadius: BorderRadius.circular(12),
-          color: isSelected ? const Color(0xFF29ABE2).withOpacity(0.05) : Theme.of(context).cardColor,
+          color: isSelected ? theme.colorScheme.primary.withOpacity(0.08) : theme.cardColor,
         ),
         child: Row(
           children: [
@@ -111,12 +92,12 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: isSelected ? const Color(0xFF29ABE2) : Theme.of(context).dividerColor,
+                color: isSelected ? theme.colorScheme.primary : theme.dividerColor,
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(
                 icon,
-                color: isSelected ? Colors.white : Theme.of(context).iconTheme.color,
+                color: isSelected ? Colors.white : theme.iconTheme.color,
                 size: 24,
               ),
             ),
@@ -130,7 +111,7 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
-                      color: isSelected ? const Color(0xFF29ABE2) : Theme.of(context).textTheme.bodyLarge?.color,
+                      color: isSelected ? theme.colorScheme.primary : theme.textTheme.bodyLarge?.color,
                     ),
                   ),
                   const SizedBox(height: 2),
@@ -138,7 +119,7 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
                     description,
                     style: TextStyle(
                       fontSize: 14,
-                      color: Theme.of(context).textTheme.bodySmall?.color,
+                      color: theme.textTheme.bodySmall?.color,
                     ),
                   ),
                 ],

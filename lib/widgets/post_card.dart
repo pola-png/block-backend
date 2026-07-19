@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+
 import 'package:lucide_icons/lucide_icons.dart';
 import '../utils/share_utils.dart';
 
@@ -12,12 +13,14 @@ import '../models/post.dart';
 import '../screens/comment_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/edit_post_screen.dart';
+import '../screens/episode_editor_screen.dart';
 import '../services/appwrite_service.dart';
 import '../services/storage_service.dart';
 import '../services/avatar_cache.dart';
 import '../screens/hashtag_feed_screen.dart';
 import '../screens/boost_post_screen.dart';
 import 'taggable_text.dart';
+import 'verification_badge.dart';
 
 class PostCard extends StatefulWidget {
   final Post post;
@@ -34,6 +37,8 @@ class PostCard extends StatefulWidget {
   final VoidCallback? onVideoDescriptionTap;
   final bool showVideoMeta;
   final bool showReelBadge;
+  final bool showReactions;
+  final bool showVideoDescription;
 
   const PostCard({
     super.key,
@@ -51,15 +56,28 @@ class PostCard extends StatefulWidget {
     this.videoDescriptionMaxLines,
     this.onVideoDescriptionTap,
     this.showReelBadge = false,
+    this.showReactions = true,
+    this.showVideoDescription = true,
   });
+
+  /// Pre-warms the post liked cache from HomeScreen's prefetch.
+  static void primePostLikedCache(String postId, bool isLiked) {
+    _PostCardState._likeCache[postId] = isLiked;
+  }
 
   @override
   State<PostCard> createState() => _PostCardState();
 }
 
-class _PostCardState extends State<PostCard> {
+class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+  static const int _displayNameCharacterLimit = 13;
+  static const Color _savedColor = Color(0xFFEAB308);
   // Cache signed URLs for avatar keys within a single run.
   static final Map<String, String?> _avatarSignedCacheByKey =
+      <String, String?>{};
+  static final Map<String, String?> _resolvedMediaUrlCache =
       <String, String?>{};
   // Cache display names so we can show the up-to-date
   // profile displayName instead of the stale username
@@ -67,27 +85,51 @@ class _PostCardState extends State<PostCard> {
   static final Map<String, String?> _displayNameByUserId = <String, String?>{};
   static final Map<String, String?> _displayNameByUsername =
       <String, String?>{};
-  // Cache like state per post so UI doesn't flicker while remote state loads.
+  static final Map<String, bool> _isVerifiedByUserId = <String, bool>{};
+  static final Map<String, bool> _isAdminByUserId = <String, bool>{};
   static final Map<String, bool> _likeCache = <String, bool>{};
 
+
   bool _isLiked = false;
+  bool _isVerified = false;
+  bool _isAdmin = false;
   int _likeCount = 0;
   int _commentCount = 0;
   int _repostCount = 0;
   int _impressionCount = 0;
+  // ignore: unused_field
   int _shareCount = 0;
+
   bool _isSaved = false;
   int _currentMediaIndex = 0;
   bool _hasReposted = false;
   bool _followLoaded = false;
-  bool _likeManuallySet = false;
   String _displayName = '';
 
   String? _currentUserId;
   bool _isFollowing = false;
-  RealtimeSubscription? _postSub;
   final Map<String, String> _signedCache = {};
   PageController? _pageController;
+
+  /// Batched impression writes — avoids one DB write per card per scroll frame.
+  static final Map<String, int> _pendingImpressions = <String, int>{};
+  static Timer? _impressionFlushTimer;
+
+  static void _flushImpressions() {
+    if (_pendingImpressions.isEmpty) return;
+    final batch = Map<String, int>.from(_pendingImpressions);
+    _pendingImpressions.clear();
+    for (final entry in batch.entries) {
+      unawaited(AppwriteService.incrementPostImpressions(entry.key, entry.value));
+    }
+  }
+
+  static void _queueImpression(String postId) {
+    _pendingImpressions[postId] = (_pendingImpressions[postId] ?? 0) + 1;
+    _impressionFlushTimer?.cancel();
+    _impressionFlushTimer = Timer(const Duration(seconds: 3), _flushImpressions);
+  }
+
 
   @override
   void initState() {
@@ -98,20 +140,48 @@ class _PostCardState extends State<PostCard> {
     _repostCount = widget.post.reposts;
     _impressionCount = widget.post.impressions;
 
-    _initAvatar();
+    final me = AppwriteService.getCurrentUserSync();
+    if (me != null) {
+      _currentUserId = me.$id;
+      final cachedLiked = AppwriteService.isPostLikedBySync(widget.post.id);
+      final cachedSaved = AppwriteService.isPostSavedBySync(widget.post.id);
+      final cachedReposted = AppwriteService.isPostRepostedBySync(widget.post.id);
+      if (cachedLiked != null) {
+        _isLiked = cachedLiked;
+        _likeCache[widget.post.id] = _isLiked;
+      }
+      if (cachedSaved != null) _isSaved = cachedSaved;
+      if (cachedReposted != null) _hasReposted = cachedReposted;
+
+      if (widget.authorId != null && widget.authorId != me.$id) {
+        final cachedFollowing =
+            AppwriteService.isFollowingSync(me.$id, widget.authorId!);
+        if (cachedFollowing != null) {
+          _isFollowing = cachedFollowing;
+          _followLoaded = true;
+        } else {
+          _isFollowing = false;
+          _followLoaded = true;
+        }
+      } else {
+        _followLoaded = true;
+      }
+    } else {
+      _followLoaded = true;
+    }
+
+    _syncUserMeta();
     _initUserAndFollow();
-    _subscribeRealtime();
     _prefetchInitialMedia();
-    _ensureDisplayName();
-    // Count an impression for this post when the card is created (optional).
+    // Batch impression writes — all visible cards flush together after 3s idle.
     if (widget.trackImpressions) {
+      _impressionCount += 1;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        setState(() => _impressionCount++);
-        AppwriteService.incrementPostImpressions(widget.post.id, 1);
+        _queueImpression(widget.post.id);
       });
     }
   }
+
 
   @override
   void didUpdateWidget(covariant PostCard oldWidget) {
@@ -119,12 +189,10 @@ class _PostCardState extends State<PostCard> {
     if (oldWidget.authorId != widget.authorId ||
         oldWidget.post.username != widget.post.username ||
         oldWidget.post.userAvatar != widget.post.userAvatar) {
-      _initAvatar(reset: true);
-      _ensureDisplayName();
+      _syncUserMeta();
     }
     if (oldWidget.post.id != widget.post.id) {
       // New post entirely: sync fresh state.
-      _likeManuallySet = false;
       _isLiked = _likeCache[widget.post.id] ?? widget.post.isLiked;
       _likeCount = widget.post.likes;
       _commentCount = widget.post.comments;
@@ -139,220 +207,137 @@ class _PostCardState extends State<PostCard> {
       }
       // Keep counts in sync when server values increase.
       if (widget.post.likes > _likeCount) _likeCount = widget.post.likes;
-      if (widget.post.comments > _commentCount)
+      if (widget.post.comments > _commentCount) {
         _commentCount = widget.post.comments;
-      if (widget.post.reposts > _repostCount)
+      }
+      if (widget.post.reposts > _repostCount) {
         _repostCount = widget.post.reposts;
-      if (widget.post.impressions > _impressionCount)
+      }
+      if (widget.post.impressions > _impressionCount) {
         _impressionCount = widget.post.impressions;
+      }
       if (!_isSaved && widget.post.isSaved) _isSaved = true;
       if (!_hasReposted && widget.post.isReposted) _hasReposted = true;
     }
   }
 
   String? _avatarUrl;
-  Future<void>? _displayNameFuture;
 
-  void _initAvatar({bool reset = false}) {
-    if (reset) {
+  int _contentMaxLines() {
+    final postType = (widget.post.postType ?? '').toLowerCase();
+    final contentLength = widget.post.content.length;
+    if (postType.contains('video') ||
+        postType.contains('reel') ||
+        postType.contains('short')) {
+      return 2;
+    }
+    if (contentLength >= 1000) {
+      return 5;
+    }
+    if (contentLength >= 400) {
+      return 3;
+    }
+    return 2;
+  }
+
+  void _syncUserMeta() {
+    final userId = widget.authorId;
+    final handle = widget.post.username.replaceAll('@', '').trim().toLowerCase();
+
+    _displayName = _truncateDisplayName(widget.post.username);
+    _isVerified = false;
+    _isAdmin = false;
+
+    final rawAvatar = widget.post.userAvatar;
+    if (rawAvatar.isNotEmpty) {
+      if (rawAvatar.startsWith('http://') || rawAvatar.startsWith('https://')) {
+        _avatarUrl = rawAvatar;
+      } else {
+        _avatarUrl = _avatarSignedCacheByKey[rawAvatar] ?? _resolvedMediaUrlCache[rawAvatar];
+        if (_avatarUrl == null) {
+          _resolveSigned(rawAvatar).then((resolved) {
+            if (resolved != null) {
+              _avatarSignedCacheByKey[rawAvatar] = resolved;
+              if (mounted) {
+                setState(() {
+                  _avatarUrl = resolved;
+                });
+              }
+            }
+          });
+        }
+      }
+    } else {
       _avatarUrl = null;
     }
-    // If post already carries a full avatar URL, use it directly.
-    final rawAvatar = widget.post.userAvatar;
-    if (rawAvatar.isNotEmpty &&
-        (rawAvatar.startsWith('http://') || rawAvatar.startsWith('https://'))) {
-      _avatarUrl = rawAvatar;
-      return;
-    }
-
-    // Try persistent cache by userId or username.
-    String? userId = widget.authorId;
-    final handle = widget.post.username
-        .replaceAll('@', '')
-        .trim()
-        .toLowerCase();
 
     if (userId != null && userId.isNotEmpty) {
-      final cached = AvatarCache.getForUserId(userId);
-      if (cached != null) {
-        _avatarUrl = cached;
-        return;
+      if (_isVerifiedByUserId.containsKey(userId)) {
+        _isVerified = _isVerifiedByUserId[userId]!;
       }
-    }
-    if ((userId == null || userId.isEmpty) && handle.isNotEmpty) {
-      final cachedByName = AvatarCache.getForUsername(handle);
-      if (cachedByName != null) {
-        _avatarUrl = cachedByName;
-        return;
+      if (_isAdminByUserId.containsKey(userId)) {
+        _isAdmin = _isAdminByUserId[userId]!;
       }
-    }
+      final cachedDN = _displayNameByUserId[userId];
+      if (cachedDN != null && cachedDN.isNotEmpty) {
+        _displayName = _truncateDisplayName(cachedDN);
+      }
 
-    // Fallback: async resolve via profile lookups.
-    _loadAvatarFromNetwork();
-  }
+      final cachedAvatar = AvatarCache.getForUserId(userId);
+      if (cachedAvatar != null) {
+        _avatarUrl = cachedAvatar;
+      }
 
-  Future<void> _ensureDisplayName() async {
-    // Use cached display name if present.
-    final cached = _getCachedDisplayName();
-    if (cached != null && cached.isNotEmpty) {
-      _displayName = cached;
-      return;
-    }
-    // Fetch from profile table using authorId if available.
-    final userId = widget.authorId;
-    if (userId == null || userId.isEmpty) return;
-    _displayNameFuture ??= _fetchDisplayName(userId);
-    await _displayNameFuture;
-  }
-
-  Future<void> _fetchDisplayName(String userId) async {
-    try {
-      final prof = await AppwriteService.getProfileByUserId(userId);
-      final dn = (prof?.data['displayName'] as String?)?.trim();
-      if (dn != null && dn.isNotEmpty) {
-        _displayNameByUserId[userId] = dn;
-        final handle = widget.post.username
-            .replaceAll('@', '')
-            .trim()
-            .toLowerCase();
-        if (handle.isNotEmpty) {
-          _displayNameByUsername[handle] = dn;
+      final cachedProfile = AppwriteService.getCachedProfileByUserId(userId);
+      if (cachedProfile != null) {
+        final dn = (cachedProfile.data['displayName'] as String?)?.trim();
+        if (dn != null && dn.isNotEmpty) {
+          _displayName = _truncateDisplayName(dn);
         }
-        if (mounted) {
-          setState(() {
-            _displayName = dn;
-          });
-        } else {
-          _displayName = dn;
+        _isVerified = cachedProfile.data['isVerified'] == true ||
+            cachedProfile.data['verified'] == true;
+        _isAdmin = cachedProfile.data['isAdmin'] == true;
+        final avatar = (cachedProfile.data['avatarUrl'] as String?)?.trim();
+        if (avatar != null && avatar.isNotEmpty) {
+          if (avatar.startsWith('http://') || avatar.startsWith('https://')) {
+            _avatarUrl = avatar;
+          } else {
+            _avatarUrl = _avatarSignedCacheByKey[avatar] ?? _resolvedMediaUrlCache[avatar];
+            if (_avatarUrl == null) {
+              _resolveSigned(avatar).then((resolved) {
+                if (resolved != null) {
+                  _avatarSignedCacheByKey[avatar] = resolved;
+                  if (mounted) {
+                    setState(() {
+                      _avatarUrl = resolved;
+                    });
+                  }
+                }
+              });
+            }
+          }
         }
       }
-    } catch (_) {
-      // ignore failures; fallback remains empty
+    } else if (handle.isNotEmpty) {
+      final cachedDN = _displayNameByUsername[handle];
+      if (cachedDN != null && cachedDN.isNotEmpty) {
+        _displayName = _truncateDisplayName(cachedDN);
+      }
+      final cachedAvatar = AvatarCache.getForUsername(handle);
+      if (cachedAvatar != null) {
+        _avatarUrl = cachedAvatar;
+      }
     }
-  }
-
-  Future<void> _loadAvatarFromNetwork() async {
-    final url = await _getAvatarUrl();
-    if (!mounted) return;
-    if (url == null || url.isEmpty) return;
-    setState(() {
-      _avatarUrl = url;
-    });
   }
 
   Future<void> _initUserAndFollow() async {
-    final me = await AppwriteService.getCurrentUser();
-    if (!mounted) return;
-    setState(() => _currentUserId = me?.$id);
-    if (me != null && widget.authorId != null && widget.authorId != me.$id) {
-      final f = await AppwriteService.isFollowing(me.$id, widget.authorId!);
-      if (!mounted) return;
-      setState(() {
-        _isFollowing = f;
-        _followLoaded = true;
-      });
-    } else {
-      // No follow relationship possible (guest/self/unknown author).
-      _followLoaded = true;
-    }
-    // Load initial like status per user
-    if (me != null) {
-      final liked = await AppwriteService.isPostLikedBy(me.$id, widget.post.id);
-      final saved = await AppwriteService.isPostSavedBy(me.$id, widget.post.id);
-      final reposted = await AppwriteService.isPostRepostedBy(
-        me.$id,
-        widget.post.id,
-      );
-      if (!mounted) return;
-      if (!_likeManuallySet) {
-        setState(() {
-          _isLiked = liked;
-          _isSaved = saved;
-          _hasReposted = reposted;
-          _likeCache[widget.post.id] = _isLiked;
-        });
-      } else {
-        // Still refresh saved/reposted even if like was manually set.
-        setState(() {
-          _isSaved = saved;
-          _hasReposted = reposted;
-        });
-      }
-    }
+    // Resolved synchronously in initState(). No async queries or late setState calls.
   }
 
-  void _subscribeRealtime() {
-    final channel =
-        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postsCollectionId}.documents.${widget.post.id}';
-    try {
-      _postSub = AppwriteService.realtime.subscribe([channel]);
-      _postSub?.stream.listen((event) {
-        final payload = event.payload;
-        if (payload.isNotEmpty) {
-          final likes = payload['likes'];
-          final comments = payload['comments'];
-          final reposts = payload['reposts'];
-          final impressions = payload['impressions'];
-          final shares = payload['shares'];
-          setState(() {
-            int? parsedLikes;
-            int? parsedComments;
-            int? parsedReposts;
-            int? parsedImpressions;
-            int? parsedShares;
 
-            if (likes is int) {
-              parsedLikes = likes;
-            } else if (likes is String) {
-              parsedLikes = int.tryParse(likes);
-            }
-            if (comments is int) {
-              parsedComments = comments;
-            } else if (comments is String) {
-              parsedComments = int.tryParse(comments);
-            }
-            if (reposts is int) {
-              parsedReposts = reposts;
-            } else if (reposts is String) {
-              parsedReposts = int.tryParse(reposts);
-            }
-            if (impressions is int) {
-              parsedImpressions = impressions;
-            } else if (impressions is String) {
-              parsedImpressions = int.tryParse(impressions);
-            }
-            if (shares is int) {
-              parsedShares = shares;
-            } else if (shares is String) {
-              parsedShares = int.tryParse(shares);
-            }
-
-            // Only move counts forward to preserve instant UI updates.
-            if (parsedLikes != null && parsedLikes >= _likeCount) {
-              _likeCount = parsedLikes;
-            }
-            if (parsedComments != null && parsedComments >= _commentCount) {
-              _commentCount = parsedComments;
-            }
-            if (parsedReposts != null && parsedReposts >= _repostCount) {
-              _repostCount = parsedReposts;
-            }
-            if (parsedImpressions != null &&
-                parsedImpressions >= _impressionCount) {
-              _impressionCount = parsedImpressions;
-            }
-            if (parsedShares != null && parsedShares >= _shareCount) {
-              _shareCount = parsedShares;
-            }
-          });
-        }
-      });
-    } catch (_) {}
-  }
 
   void _prefetchInitialMedia() {
-    final urls =
-        widget.mediaUrls ??
+    final urls = widget.mediaUrls ??
         (widget.post.imageUrl != null ? [widget.post.imageUrl!] : <String>[]);
     if (urls.isNotEmpty) {
       _resolveSigned(urls.first).then((u) {
@@ -368,20 +353,19 @@ class _PostCardState extends State<PostCard> {
 
   @override
   void dispose() {
-    _postSub?.close();
     _pageController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final kindLower = (widget.post.kind ?? '').toLowerCase();
-    final isVideoPost =
-        kindLower.contains('video') ||
-        kindLower.contains('reel') ||
-        kindLower.contains('short');
+    final postTypeLower = (widget.post.postType ?? '').toLowerCase();
+    final isReelPost =
+        postTypeLower.contains('reel') || postTypeLower.contains('short');
+    final isVideoPost = postTypeLower.contains('video') || isReelPost;
     // Faint dark gap between posts, adapt to theme.
     final gapColor = isDark ? Colors.black : Colors.black.withOpacity(0.03);
 
@@ -402,8 +386,9 @@ class _PostCardState extends State<PostCard> {
               widget.post.imageUrl != null ||
               (isVideoPost && !widget.isDetail))
             _buildMediaContent(),
-          if (isVideoPost && widget.showVideoMeta) _buildVideoMeta(),
-          _buildActions(),
+          if (isVideoPost && !isReelPost && widget.showVideoMeta)
+            _buildVideoMeta(),
+          if (widget.showReactions) _buildActions(),
         ],
       ),
     );
@@ -422,6 +407,7 @@ class _PostCardState extends State<PostCard> {
 
   Widget _buildHeader() {
     final theme = Theme.of(context);
+    final displayName = _displayName;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Column(
@@ -452,49 +438,60 @@ class _PostCardState extends State<PostCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _displayName.isNotEmpty
-                            ? _displayName
-                            : (_getCachedDisplayName() ?? ''),
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: theme.brightness == Brightness.dark
-                              ? Colors.white
-                              : Colors.black,
-                        ),
-                      ),
-                      Text(
-                        _formatTimestamp(widget.post.timestamp),
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+                      Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        runSpacing: 2,
+                        children: [
+                          Text(
+                            displayName,
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              color: theme.brightness == Brightness.dark
+                                  ? Colors.white
+                                  : Colors.black,
+                            ),
+                          ),
+                          if (_isVerified || _isAdmin)
+                            VerificationBadge(
+                              size: 16,
+                              isPremium: _isAdmin,
+                            ),
+                          if (widget.showViewsLabel)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  LucideIcons.eye,
+                                  size: 14,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _formatCompactCount(widget.post.views),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          Text(
+                            _formatTimestamp(widget.post.timestamp),
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
               ),
-              if (widget.showReelBadge)
-                Container(
-                  margin: const EdgeInsets.only(right: 12),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF9333EA).withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Text(
-                    'Reels',
-                    style: TextStyle(
-                      color: Color(0xFF9333EA),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
               if (!widget.isGuest &&
                   widget.authorId != null &&
                   _currentUserId != null &&
@@ -509,11 +506,10 @@ class _PostCardState extends State<PostCard> {
                       vertical: 8,
                     ),
                     backgroundColor: _isFollowing
-                        ? Colors.red.shade50
-                        : const Color(0xFFEF4444),
-                    foregroundColor: _isFollowing
-                        ? const Color(0xFFB91C1C)
-                        : Colors.white,
+                        ? Colors.blue.shade50
+                        : const Color(0xFF3B82F6),
+                    foregroundColor:
+                        _isFollowing ? const Color(0xFF1D4ED8) : Colors.white,
                     elevation: 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(999),
@@ -529,7 +525,7 @@ class _PostCardState extends State<PostCard> {
                 ),
               IconButton(
                 icon: Icon(
-                  LucideIcons.moreHorizontal,
+                  Icons.more_vert,
                   color: theme.iconTheme.color,
                 ),
                 onPressed: () => _showReportMenu(),
@@ -545,137 +541,19 @@ class _PostCardState extends State<PostCard> {
     final avatarUrl = _avatarUrl;
     if (avatarUrl == null || avatarUrl.isEmpty) {
       return CircleAvatar(
-        radius: 30,
+        radius: 20,
         backgroundColor: Colors.grey[200],
         child: const Icon(Icons.person, color: Colors.grey),
       );
     }
     return CircleAvatar(
-      radius: 30,
+      radius: 20,
       backgroundColor: Colors.grey[200],
       backgroundImage: NetworkImage(avatarUrl),
     );
   }
 
-  Future<String?> _getAvatarUrl() async {
-    // If post already has a userAvatar key, resolve/sign it once
-    // and cache by that key so multiple cards don't re-sign it.
-    if (widget.post.userAvatar.isNotEmpty) {
-      final rawKey = widget.post.userAvatar;
-      final cachedSigned = _avatarSignedCacheByKey[rawKey];
-      if (cachedSigned != null) {
-        return cachedSigned;
-      }
-      final resolved = await _resolveSigned(rawKey);
-      if (resolved != null) {
-        _avatarSignedCacheByKey[rawKey] = resolved;
-      }
-      return resolved;
-    }
 
-    // Prefer caching by userId; fall back to username handle.
-    String? userId = widget.authorId;
-    final handle = widget.post.username
-        .replaceAll('@', '')
-        .trim()
-        .toLowerCase();
-
-    if (userId != null && userId.isNotEmpty) {
-      final cached = AvatarCache.getForUserId(userId);
-      if (cached != null) return cached;
-    }
-    if ((userId == null || userId.isEmpty) && handle.isNotEmpty) {
-      final cachedByName = AvatarCache.getForUsername(handle);
-      if (cachedByName != null) return cachedByName;
-    }
-
-    String? avatar;
-
-    try {
-      // 1) If we don't know userId, try resolving by @username.
-      if ((userId == null || userId.isEmpty) && handle.isNotEmpty) {
-        final prof = await AppwriteService.getProfileByUsername(handle);
-        if (prof != null) {
-          userId = prof.data['userId'] as String? ?? prof.$id;
-          avatar = prof.data['avatarUrl'] as String?;
-          final dn = (prof.data['displayName'] as String?)?.trim();
-          if (dn != null && dn.isNotEmpty) {
-            _displayNameByUserId[userId] = dn;
-            _displayNameByUsername[handle] = dn;
-          }
-        }
-      }
-
-      // 2) If still no avatar, load profile by userId.
-      if ((avatar == null || avatar.isEmpty) &&
-          userId != null &&
-          userId.isNotEmpty) {
-        final prof = await AppwriteService.getProfileByUserId(userId);
-        avatar = prof?.data['avatarUrl'] as String?;
-        final dn = (prof?.data['displayName'] as String?)?.trim();
-        if (dn != null && dn.isNotEmpty) {
-          _displayNameByUserId[userId] = dn;
-          if (handle.isNotEmpty) {
-            _displayNameByUsername[handle] = dn;
-          }
-        }
-      }
-    } catch (_) {
-      // Ignore errors and fall back to placeholder avatar.
-    }
-
-    // Cache negative result so we don't keep hitting the backend.
-    if (avatar == null || avatar.isEmpty) {
-      if (userId != null && userId.isNotEmpty) {
-        await AvatarCache.setForUserId(userId, null);
-      } else if (handle.isNotEmpty) {
-        await AvatarCache.setForUsername(handle, null);
-      }
-      return null;
-    }
-
-    // Support raw keys as well as full URLs, and cache final URL.
-    String? resolved;
-    if (avatar.startsWith('http://') || avatar.startsWith('https://')) {
-      resolved = avatar;
-    } else {
-      resolved = await _resolveSigned(avatar);
-    }
-
-    if (userId != null && userId.isNotEmpty) {
-      await AvatarCache.setForUserId(userId, resolved);
-    }
-    if (handle.isNotEmpty) {
-      await AvatarCache.setForUsername(handle, resolved);
-    }
-
-    // Trigger a rebuild so that any newly-fetched displayName
-    // from the profile is reflected in the header text.
-    if (mounted) {
-      // ignore: invalid_use_of_protected_member, invalid_use_of_visible_for_testing_member
-      setState(() {});
-    }
-
-    return resolved;
-  }
-
-  String? _getCachedDisplayName() {
-    String? userId = widget.authorId;
-    final handle = widget.post.username
-        .replaceAll('@', '')
-        .trim()
-        .toLowerCase();
-
-    if (userId != null &&
-        userId.isNotEmpty &&
-        _displayNameByUserId.containsKey(userId)) {
-      return _displayNameByUserId[userId];
-    }
-    if (handle.isNotEmpty && _displayNameByUsername.containsKey(handle)) {
-      return _displayNameByUsername[handle];
-    }
-    return null;
-  }
 
   void _openAuthorProfile() async {
     if (widget.isGuest) {
@@ -718,8 +596,17 @@ class _PostCardState extends State<PostCard> {
 
   Future<void> _openEditPost() async {
     if (widget.isGuest) return;
+    Map<String, dynamic> meta = const <String, dynamic>{'isEpisode': false};
+    try {
+      meta = await AppwriteService.fetchEpisodeMetadata(widget.post.id);
+    } catch (_) {}
+    if (!mounted) return;
     final updated = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => EditPostScreen(post: widget.post)),
+      MaterialPageRoute(
+        builder: (_) => meta['isEpisode'] == true
+            ? EpisodeEditorScreen(post: widget.post)
+            : EditPostScreen(post: widget.post),
+      ),
     );
     if (updated == true && mounted) {
       ScaffoldMessenger.of(
@@ -736,13 +623,23 @@ class _PostCardState extends State<PostCard> {
         ? Color(widget.post.textBgColor!)
         : null;
     final textAlign = bgColor != null ? TextAlign.center : TextAlign.start;
-    final baseStyle = const TextStyle(
-      fontSize: 21,
-      fontWeight: FontWeight.w400,
-      height: 1.4,
-    );
-    final bool bgIsLight =
-        bgColor?.computeLuminance() != null &&
+    final contentLength = widget.post.content.trim().length;
+    final baseStyle = bgColor != null
+        ? TextStyle(
+            fontSize: contentLength < 50
+                ? 30
+                : contentLength < 100
+                    ? 24
+                    : 20,
+            fontWeight: FontWeight.w800,
+            height: 1.25,
+          )
+        : const TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w500,
+            height: 1.85,
+          );
+    final bool bgIsLight = bgColor?.computeLuminance() != null &&
         (bgColor!.computeLuminance() > 0.55);
     final textStyle = baseStyle.copyWith(
       color: bgColor != null
@@ -755,6 +652,9 @@ class _PostCardState extends State<PostCard> {
       text: widget.post.content,
       style: textStyle,
       textAlign: textAlign,
+      maxLines: _contentMaxLines(),
+      expandLabel: 'more',
+      collapseLabel: 'Show less',
       onMentionTap: _handleMentionTap,
       onHashtagTap: _handleHashtagTap,
     );
@@ -768,18 +668,23 @@ class _PostCardState extends State<PostCard> {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: AspectRatio(
-        aspectRatio: 1 / 0.50, // shorter rectangle than before
-        child: Container(
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: bgColor,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [content],
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 340),
+          child: AspectRatio(
+            aspectRatio: 1 / 1.2,
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [content],
+              ),
+            ),
           ),
         ),
       ),
@@ -790,12 +695,11 @@ class _PostCardState extends State<PostCard> {
     final urls = (widget.mediaUrls != null && widget.mediaUrls!.isNotEmpty)
         ? widget.mediaUrls!
         : (widget.post.imageUrl != null ? [widget.post.imageUrl!] : <String>[]);
-    final kindLower = (widget.post.kind ?? '').toLowerCase();
-    final isVideoPost =
-        kindLower.contains('video') ||
-        kindLower.contains('reel') ||
-        kindLower.contains('short');
-    final aspectRatio = _pickAspectRatio(kindLower, isVideoPost);
+    final postTypeLower = (widget.post.postType ?? '').toLowerCase();
+    final isReelPost =
+        postTypeLower.contains('reel') || postTypeLower.contains('short');
+    final isVideoPost = postTypeLower.contains('video') || isReelPost;
+    final aspectRatio = _pickAspectRatio(postTypeLower, isVideoPost);
     const mediaMargin = EdgeInsets.symmetric(horizontal: 16);
     final borderRadius = BorderRadius.circular(16);
 
@@ -830,7 +734,13 @@ class _PostCardState extends State<PostCard> {
 
     if (urls.length == 1) {
       // Base cover image
-      Widget cover = _signedImage(urls.first);
+      Widget cover = _signedImage(
+        urls.first,
+        fit: isVideoPost && !isReelPost ? BoxFit.contain : BoxFit.cover,
+        alignment:
+            isVideoPost && isReelPost ? Alignment.center : Alignment.topCenter,
+        backgroundColor: isVideoPost ? Colors.black : const Color(0xFFF3F4F6),
+      );
 
       // Overlay a centered play icon for videos/reels in feed so users
       // can clearly see it's playable.
@@ -839,6 +749,29 @@ class _PostCardState extends State<PostCard> {
           fit: StackFit.expand,
           children: [
             cover,
+            if (widget.showReelBadge)
+              Positioned(
+                top: 12,
+                left: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.55),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    'Reels',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
             Center(
               child: Container(
                 decoration: BoxDecoration(
@@ -851,6 +784,33 @@ class _PostCardState extends State<PostCard> {
                 ),
               ),
             ),
+            if (isReelPost && (widget.post.title?.trim().isNotEmpty ?? false))
+              Positioned(
+                left: 12,
+                right: 12,
+                bottom: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.52),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: TaggableExpandableText(
+                    text: widget.post.title!.trim(),
+                    maxLines: 2,
+                    expandLabel: 'more',
+                    collapseLabel: 'Show less',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
           ],
         );
       }
@@ -862,8 +822,13 @@ class _PostCardState extends State<PostCard> {
           child: AspectRatio(aspectRatio: aspectRatio, child: cover),
         ),
       );
-      if (widget.onOpenPost == null) return image;
-      return InkWell(onTap: widget.onOpenPost, child: image);
+      final onTap = _mediaTapHandler(
+        urls: urls,
+        isVideoPost: isVideoPost,
+        isReelPost: isReelPost,
+      );
+      if (onTap == null) return image;
+      return InkWell(onTap: onTap, child: image);
     }
     _pageController ??= PageController();
     return Column(
@@ -875,71 +840,260 @@ class _PostCardState extends State<PostCard> {
             borderRadius: borderRadius,
             child: AspectRatio(
               aspectRatio: aspectRatio,
-              child: PageView.builder(
-                controller: _pageController,
-                itemCount: urls.length,
-                onPageChanged: (index) {
-                  setState(() => _currentMediaIndex = index);
-                  final next = index + 1;
-                  if (next < urls.length) {
-                    _resolveSigned(urls[next]).then((u) {
-                      if (u != null) _precache(u);
-                    });
-                  }
-                },
-                itemBuilder: (context, index) {
-                  final image = _signedImage(urls[index]);
-                  if (widget.onOpenPost == null) return image;
-                  return GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: widget.onOpenPost,
-                    child: image,
-                  );
-                },
+              child: Stack(
+                children: [
+                  PageView.builder(
+                    controller: _pageController,
+                    itemCount: urls.length,
+                    onPageChanged: (index) {
+                      setState(() => _currentMediaIndex = index);
+                      final next = index + 1;
+                      if (next < urls.length) {
+                        _resolveSigned(urls[next]).then((u) {
+                          if (u != null) _precache(u);
+                        });
+                      }
+                    },
+                    itemBuilder: (context, index) {
+                      final image = _signedImage(
+                        urls[index],
+                        fit: isVideoPost && !isReelPost
+                            ? BoxFit.contain
+                            : BoxFit.cover,
+                        alignment: isVideoPost && isReelPost
+                            ? Alignment.center
+                            : Alignment.topCenter,
+                        backgroundColor: isVideoPost
+                            ? Colors.black
+                            : const Color(0xFFF3F4F6),
+                      );
+                      final onTap = _mediaTapHandler(
+                        urls: urls,
+                        isVideoPost: isVideoPost,
+                        isReelPost: isReelPost,
+                      );
+                      if (onTap == null) return image;
+                      return GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTap: onTap,
+                        child: image,
+                      );
+                    },
+                  ),
+                  Positioned(
+                    top: 12,
+                    right: 12,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: List.generate(urls.length, (index) {
+                        final isActive = index == _currentMediaIndex;
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          margin: const EdgeInsets.symmetric(horizontal: 2),
+                          width: isActive ? 24 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(999),
+                            color: isActive
+                                ? Colors.white
+                                : Colors.white.withOpacity(0.6),
+                          ),
+                        );
+                      }),
+                    ),
+                  ),
+                  if (widget.showReelBadge)
+                    Positioned(
+                      top: 12,
+                      left: 12,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.55),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text(
+                          'Reels',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 6),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(urls.length, (index) {
-            final isActive = index == _currentMediaIndex;
-            return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 3),
-              width: isActive ? 8 : 6,
-              height: isActive ? 8 : 6,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isActive
-                    ? const Color(0xFF1DA1F2)
-                    : Colors.grey.withOpacity(0.4),
-              ),
-            );
-          }),
         ),
       ],
     );
   }
 
-  double _pickAspectRatio(String kindLower, bool isVideoPost) {
-    if (isVideoPost && kindLower.contains('reel')) {
-      return 13 / 6; // slightly shorter portrait reels in feed
+  double _pickAspectRatio(String postTypeLower, bool isVideoPost) {
+    if (isVideoPost && postTypeLower.contains('reel')) {
+      return 0.84;
     }
     if (isVideoPost) {
-      return 16 / 8; // standard landscape video look
+      return 16 / 9;
     }
-    return 10 /
-        5; // photo/news default: taller than square so reactions stay visible
+    return 1 / 1.2;
   }
 
-  Widget _signedImage(String url) {
-    // On web, Bunny CDN is currently not CORS-enabled / available,
-    // and attempting to load those URLs causes slow failures and
-    // console noise. Fall back to a lightweight placeholder instead.
-    if (kIsWeb && url.contains('b-cdn.net')) {
+  VoidCallback? _mediaTapHandler({
+    required List<String> urls,
+    required bool isVideoPost,
+    required bool isReelPost,
+  }) {
+    if (isVideoPost) {
+      return widget.onOpenPost;
+    }
+    if (urls.isEmpty) {
+      return widget.onOpenPost;
+    }
+    return () => _openImageViewer(urls, initialIndex: _currentMediaIndex);
+  }
+
+  Future<void> _openImageViewer(
+    List<String> urls, {
+    int initialIndex = 0,
+  }) async {
+    final pageController = PageController(initialPage: initialIndex);
+    final startIndex = initialIndex < urls.length ? initialIndex : 0;
+
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Image viewer',
+      barrierColor: Colors.black,
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        var currentIndex = startIndex;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Scaffold(
+              backgroundColor: Colors.black,
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            onPressed: () => Navigator.of(dialogContext).pop(),
+                            icon: const Icon(
+                              Icons.arrow_back,
+                              color: Colors.white,
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              '${currentIndex + 1} / ${urls.length}',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 48),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: PageView.builder(
+                        controller: pageController,
+                        itemCount: urls.length,
+                        onPageChanged: (index) {
+                          setDialogState(() => currentIndex = index);
+                          if (mounted) {
+                            setState(() => _currentMediaIndex = index);
+                          }
+                        },
+                        itemBuilder: (context, index) {
+                          return InteractiveViewer(
+                            minScale: 1,
+                            maxScale: 4,
+                            child: Center(
+                              child: FutureBuilder<String?>(
+                                future: _resolveSigned(urls[index]),
+                                builder: (context, snap) {
+                                  final imgUrl = snap.data;
+                                  if (imgUrl == null) {
+                                    return Center(
+                                      child: CircularProgressIndicator(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                      ),
+                                    );
+                                  }
+                                  if (imgUrl.isEmpty ||
+                                      imgUrl.contains('b-cdn.net')) {
+                                    return Container(
+                                      color: Colors.grey[200],
+                                      child: const Center(
+                                        child: Icon(
+                                          LucideIcons.imageOff,
+                                          size: 40,
+                                          color: Color(0xFF9CA3AF),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  return CachedNetworkImage(
+                                    imageUrl: imgUrl,
+                                    fit: BoxFit.contain,
+                                    placeholder: (c, s) => Center(
+                                      child: CircularProgressIndicator(
+                                        color:
+                                            Theme.of(c).colorScheme.primary,
+                                      ),
+                                    ),
+                                    errorWidget: (c, s, e) => const Icon(
+                                      LucideIcons.imageOff,
+                                      size: 40,
+                                      color: Color(0xFF9CA3AF),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    pageController.dispose();
+  }
+
+  Widget _signedImage(
+    String url, {
+    BoxFit fit = BoxFit.cover,
+    Alignment alignment = Alignment.center,
+    Color backgroundColor = const Color(0xFFF3F4F6),
+  }) {
+    // Bunny CDN pull zone is suspended, and empty URLs should fail-fast
+    // to avoid slow failures and console noise. Fall back to placeholder.
+    if (url.isEmpty || url.contains('b-cdn.net')) {
       return Container(
-        color: const Color(0xFFF3F4F6),
+        color: backgroundColor,
         child: const Center(
           child: Icon(
             LucideIcons.imageOff,
@@ -950,45 +1104,80 @@ class _PostCardState extends State<PostCard> {
       );
     }
 
-    return FutureBuilder<String?>(
-      future: _resolveSigned(url),
-      builder: (context, snap) {
-        final imgUrl = snap.data;
-        if (imgUrl == null) {
-          return const SizedBox.expand(
-            child: Center(child: CircularProgressIndicator()),
-          );
-        }
-        return CachedNetworkImage(
-          imageUrl: imgUrl,
-          width: double.infinity,
-          fit: BoxFit.cover,
-          alignment: Alignment.center,
-          fadeInDuration: Duration.zero,
-          fadeOutDuration: Duration.zero,
-          placeholderFadeInDuration: Duration.zero,
-          placeholder: (c, s) => Container(color: const Color(0xFFF3F4F6)),
-          errorWidget: (c, s, e) => Container(
-            color: const Color(0xFFF3F4F6),
-            child: const Center(
-              child: Icon(
-                LucideIcons.imageOff,
-                size: 40,
-                color: Color(0xFF9CA3AF),
-              ),
-            ),
+    final cached = _signedCache[url] ?? _resolvedMediaUrlCache[url];
+    if (cached != null && cached.isNotEmpty) {
+      return _buildResolvedImage(
+        cached,
+        fit: fit,
+        alignment: alignment,
+        backgroundColor: backgroundColor,
+      );
+    }
+
+    // Appwrite Storage URLs do not need signing and can be resolved synchronously!
+    if (url.contains('cloud.appwrite.io')) {
+      _signedCache[url] = url;
+      _resolvedMediaUrlCache[url] = url;
+      return _buildResolvedImage(
+        url,
+        fit: fit,
+        alignment: alignment,
+        backgroundColor: backgroundColor,
+      );
+    }
+
+    // Trigger background signed URL resolution, and call setState when done.
+    _resolveSigned(url).then((resolved) {
+      if (resolved != null && resolved.isNotEmpty && mounted) {
+        setState(() {});
+      }
+    });
+
+    return Container(color: backgroundColor);
+  }
+
+  Widget _buildResolvedImage(
+    String imgUrl, {
+    required BoxFit fit,
+    required Alignment alignment,
+    required Color backgroundColor,
+  }) {
+    return CachedNetworkImage(
+      imageUrl: imgUrl,
+      width: double.infinity,
+      fit: fit,
+      alignment: alignment,
+      fadeInDuration: Duration.zero,
+      fadeOutDuration: Duration.zero,
+      placeholderFadeInDuration: Duration.zero,
+      placeholder: (c, s) => Container(color: backgroundColor),
+      errorWidget: (c, s, e) => Container(
+        color: backgroundColor,
+        child: const Center(
+          child: Icon(
+            LucideIcons.imageOff,
+            size: 40,
+            color: Color(0xFF9CA3AF),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
   Future<String?> _resolveSigned(String url) async {
     if (_signedCache.containsKey(url)) return _signedCache[url]!;
+    if (_resolvedMediaUrlCache.containsKey(url)) {
+      final cached = _resolvedMediaUrlCache[url];
+      if (cached != null) {
+        _signedCache[url] = cached;
+      }
+      return cached;
+    }
 
     // If this is an Appwrite Storage URL, return it as-is (no Wasabi signing).
     if (url.contains('cloud.appwrite.io')) {
       _signedCache[url] = url;
+      _resolvedMediaUrlCache[url] = url;
       return url;
     }
 
@@ -1007,46 +1196,85 @@ class _PostCardState extends State<PostCard> {
       }
     }
 
-    final signed = await WasabiService.getSignedUrl(key);
+    final signed = await StorageService.getSignedUrl(key);
     _signedCache[url] = signed;
+    _resolvedMediaUrlCache[url] = signed;
     return signed;
   }
 
   Widget _buildVideoMeta() {
     final theme = Theme.of(context);
+    final postTypeLower = (widget.post.postType ?? '').toLowerCase();
+    final isReelPost =
+        postTypeLower.contains('reel') || postTypeLower.contains('short');
     final title = widget.post.title?.trim();
-    final description = widget.post.content.trim();
-    if ((title == null || title.isEmpty) && description.isEmpty) {
+    final content = widget.post.content.trim();
+    if ((title == null || title.isEmpty) && content.isEmpty) {
       return const SizedBox.shrink();
     }
     const baseStyle = TextStyle(fontSize: 16, fontWeight: FontWeight.w500);
+
+    if (!widget.isDetail) {
+      final feedText = (title != null && title.isNotEmpty)
+          ? title
+          : (isReelPost ? content : null);
+      if (feedText == null || feedText.isEmpty) {
+        return const SizedBox.shrink();
+      }
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onOpenPost,
+          child: TaggableExpandableText(
+            text: feedText,
+            maxLines: 2,
+            expandLabel: 'more',
+            collapseLabel: 'Show less',
+            style: baseStyle.copyWith(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (title != null && title.isNotEmpty)
-            Text(
-              title,
-              style: baseStyle.copyWith(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: theme.colorScheme.onSurface,
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onOpenPost,
+              child: TaggableExpandableText(
+                text: title,
+                maxLines: 2,
+                expandLabel: 'more',
+                collapseLabel: 'Show less',
+                style: baseStyle.copyWith(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
             ),
-          if (description.isNotEmpty) ...[
+          if (content.isNotEmpty && widget.showVideoDescription) ...[
             const SizedBox(height: 4),
             if (widget.videoDescriptionMaxLines != null &&
                 widget.onVideoDescriptionTap != null)
               _buildVideoDescriptionPreview(
-                description,
+                content,
                 theme,
                 widget.videoDescriptionMaxLines!,
                 widget.onVideoDescriptionTap!,
               )
             else
               _ExpandableText(
-                text: description,
+                text: content,
                 style: const TextStyle(
                   fontSize: 15,
                   height: 1.4,
@@ -1083,17 +1311,13 @@ class _PostCardState extends State<PostCard> {
         overflow: TextOverflow.ellipsis,
         text: TextSpan(
           style: baseStyle,
-          children: [
-            TextSpan(text: snippet),
-            if (truncated) const TextSpan(text: '... '),
-            TextSpan(
-              text: ' See more',
-              style: TextStyle(
-                color: theme.colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
+          children: buildTaggableSpans(
+            context,
+            truncated ? '$snippet...' : snippet,
+            baseStyle,
+            _handleMentionTap,
+            _handleHashtagTap,
+          ),
         ),
       ),
     );
@@ -1130,14 +1354,12 @@ class _PostCardState extends State<PostCard> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildLikeAction(),
-          _buildActionButton(
-            LucideIcons.messageCircle,
-            _commentCount,
-            iconDefault,
-            _openComments,
-            countColor,
+          _buildIconOnlyAction(
+            LucideIcons.bookmark,
+            _isSaved ? _savedColor : iconDefault,
+            _toggleSave,
           ),
+          _buildShareAction(),
           _buildActionButton(
             LucideIcons.repeat2,
             _repostCount,
@@ -1145,23 +1367,37 @@ class _PostCardState extends State<PostCard> {
             _repostPost,
             countColor,
           ),
-          _buildShareAction(),
           _buildActionButton(
             LucideIcons.barChart2,
-            _impressionCount,
+            widget.showViewsLabel ? widget.post.views : _impressionCount,
             iconDefault,
             () {},
             countColor,
-            widget.showViewsLabel ? 'Views' : null,
           ),
-          IconButton(
-            icon: Icon(
-              _isSaved ? LucideIcons.bookmark : LucideIcons.bookmark,
-              color: _isSaved ? theme.colorScheme.primary : iconDefault,
-            ),
-            onPressed: _toggleSave,
+          _buildActionButton(
+            LucideIcons.messageCircle,
+            _commentCount,
+            iconDefault,
+            _openComments,
+            countColor,
           ),
+          _buildLikeAction(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildIconOnlyAction(
+    IconData icon,
+    Color? color,
+    VoidCallback onPressed,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onPressed,
+        child: Icon(icon, color: color, size: 24),
       ),
     );
   }
@@ -1174,29 +1410,34 @@ class _PostCardState extends State<PostCard> {
     Color? countColor,
     String? label,
   ]) {
-    return Row(
-      children: [
-        IconButton(
-          icon: Icon(icon, color: color),
-          onPressed: onPressed,
-        ),
-        if (count != null)
-          Row(
-            children: [
-              _AnimatedCount(value: count, color: countColor),
-              if (label != null) ...[
-                const SizedBox(width: 2),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: countColor ?? Colors.grey,
-                  ),
-                ),
-              ],
-            ],
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onPressed,
+            child: Icon(icon, color: color, size: 24),
           ),
-      ],
+          if (count != null)
+            Row(
+              children: [
+                _AnimatedCount(value: count, color: countColor),
+                if (label != null) ...[
+                  const SizedBox(width: 1),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: countColor ?? Colors.grey,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+        ],
+      ),
     );
   }
 
@@ -1204,25 +1445,23 @@ class _PostCardState extends State<PostCard> {
     final theme = Theme.of(context);
     final iconDefault =
         theme.iconTheme.color ?? theme.colorScheme.onSurfaceVariant;
-    final countColor = theme.colorScheme.onSurfaceVariant;
-    return Row(
-      children: [
-        IconButton(
-          icon: Transform(
-            alignment: Alignment.center,
-            transform: Matrix4.rotationY(math.pi),
-            child: Icon(Icons.reply, color: iconDefault),
-          ),
-          onPressed: () {
-            setState(() {
-              _shareCount++;
-            });
-            AppwriteService.incrementPostShares(widget.post.id, 1);
-            _sharePost();
-          },
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          setState(() {
+            _shareCount++;
+          });
+          AppwriteService.incrementPostShares(widget.post.id, 1);
+          _sharePost();
+        },
+        child: Transform(
+          alignment: Alignment.center,
+          transform: Matrix4.rotationY(math.pi),
+          child: Icon(Icons.reply, color: iconDefault, size: 24),
         ),
-        _AnimatedCount(value: _shareCount, color: countColor),
-      ],
+      ),
     );
   }
 
@@ -1232,34 +1471,27 @@ class _PostCardState extends State<PostCard> {
     final inactiveColor =
         theme.iconTheme.color ?? theme.colorScheme.onSurfaceVariant;
 
-    return Row(
-      children: [
-        InkResponse(
-          onTap: _toggleLike,
-          borderRadius: BorderRadius.circular(999),
-          radius: 24,
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: _isLiked
-                  ? activeColor.withOpacity(0.12)
-                  : Colors.transparent,
-              shape: BoxShape.circle,
-            ),
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleLike,
             child: Icon(
               _isLiked ? Icons.favorite : Icons.favorite_border,
               color: _isLiked ? activeColor : inactiveColor,
-              size: 22,
+              size: 24,
             ),
           ),
-        ),
-        const SizedBox(width: 4),
-        _AnimatedCount(
-          value: _likeCount,
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ],
+          const SizedBox(width: 0),
+          _AnimatedCount(
+            value: _likeCount,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ],
+      ),
     );
   }
 
@@ -1293,7 +1525,6 @@ class _PostCardState extends State<PostCard> {
       _isLiked = targetLike;
       _likeCount += targetLike ? 1 : -1;
       if (_likeCount < 0) _likeCount = 0;
-      _likeManuallySet = true;
       _likeCache[widget.post.id] = _isLiked;
     });
     try {
@@ -1368,13 +1599,12 @@ class _PostCardState extends State<PostCard> {
       widget.onGuestAction?.call();
       return;
     }
-    if (mounted) {
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => CommentScreen(post: widget.post),
-        ),
-      );
-    }
+    showCommentModal(
+      context,
+      post: widget.post,
+      isGuest: widget.isGuest,
+      onGuestAction: widget.onGuestAction,
+    );
   }
 
   void _sharePost() {
@@ -1414,105 +1644,155 @@ class _PostCardState extends State<PostCard> {
   void _showReportMenu() {
     showModalBottomSheet(
       context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: false,
       builder: (bcontext) {
-        return Wrap(
-          children: [
-            if (_currentUserId != null &&
-                widget.authorId != null &&
-                widget.authorId == _currentUserId)
-              ListTile(
-                leading: const Icon(LucideIcons.edit3),
-                title: const Text('Edit Post'),
-                onTap: () async {
-                  Navigator.of(bcontext).pop();
-                  await _openEditPost();
-                },
-              ),
-            if (_currentUserId != null &&
-                widget.authorId != null &&
-                widget.authorId == _currentUserId)
-              ListTile(
-                leading: const Icon(LucideIcons.zap),
-                title: const Text('Promote with ads'),
-                onTap: () async {
-                  Navigator.of(bcontext).pop();
-                  await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => BoostPostScreen(post: widget.post),
-                    ),
-                  );
-                },
-              ),
-            if (_currentUserId != null &&
-                widget.post.sourcePostId == null &&
-                widget.authorId == _currentUserId)
-              ListTile(
-                leading: const Icon(LucideIcons.trash2, color: Colors.red),
-                title: const Text(
-                  'Delete Post',
-                  style: TextStyle(color: Colors.red),
+        final theme = Theme.of(bcontext);
+        final isOwner = _currentUserId != null &&
+            widget.authorId != null &&
+            widget.authorId == _currentUserId;
+        return SafeArea(
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
                 ),
-                onTap: () async {
-                  Navigator.of(bcontext).pop();
-                  final messenger = ScaffoldMessenger.of(context);
-                  final confirm = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Delete Post'),
-                      content: const Text(
-                        'Are you sure you want to delete this post?',
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.of(ctx).pop(false),
-                          child: const Text('Cancel'),
+                const SizedBox(height: 10),
+                if (isOwner)
+                  _buildMenuTile(
+                    context: bcontext,
+                    icon: LucideIcons.edit3,
+                    label: 'Edit post',
+                    onTap: () async {
+                      Navigator.of(bcontext).pop();
+                      await _openEditPost();
+                    },
+                  ),
+                if (isOwner)
+                  _buildMenuTile(
+                    context: bcontext,
+                    icon: LucideIcons.zap,
+                    label: 'Promote with ads',
+                    onTap: () async {
+                      Navigator.of(bcontext).pop();
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => BoostPostScreen(post: widget.post),
                         ),
-                        TextButton(
-                          onPressed: () => Navigator.of(ctx).pop(true),
-                          child: const Text(
-                            'Delete',
-                            style: TextStyle(color: Colors.red),
+                      );
+                    },
+                  ),
+                if (isOwner && widget.post.sourcePostId == null)
+                  _buildMenuTile(
+                    context: bcontext,
+                    icon: LucideIcons.trash2,
+                    label: 'Delete post',
+                    destructive: true,
+                    onTap: () async {
+                      Navigator.of(bcontext).pop();
+                      final messenger = ScaffoldMessenger.of(context);
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Delete post'),
+                          content: const Text(
+                            'Are you sure you want to delete this post?',
                           ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('Cancel'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(true),
+                              child: const Text(
+                                'Delete',
+                                style: TextStyle(color: Colors.red),
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  );
-                  if (confirm != true) return;
-                  try {
-                    await AppwriteService.deletePost(widget.post.id);
-                    if (!mounted) return;
-                    messenger.showSnackBar(
-                      const SnackBar(content: Text('Post deleted')),
-                    );
-                    // Inform parent lists so they can remove this card instantly.
-                    widget.onDeleted?.call();
-                  } catch (e) {
-                    if (!mounted) return;
-                    messenger.showSnackBar(
-                      const SnackBar(content: Text('Failed to delete post')),
-                    );
-                  }
-                },
-              ),
-            ListTile(
-              leading: const Icon(LucideIcons.flag, color: Colors.red),
-              title: const Text(
-                'Report Post',
-                style: TextStyle(color: Colors.red),
-              ),
-              onTap: () {
-                Navigator.of(bcontext).pop();
-                _showReportConfirmation();
-              },
+                      );
+                      if (confirm != true) return;
+                      try {
+                        await AppwriteService.deletePost(widget.post.id);
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('Post deleted')),
+                        );
+                        widget.onDeleted?.call();
+                      } catch (_) {
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(
+                              content: Text('Failed to delete post')),
+                        );
+                      }
+                    },
+                  ),
+                _buildMenuTile(
+                  context: bcontext,
+                  icon: LucideIcons.userX,
+                  label: 'Block user',
+                  destructive: true,
+                  onTap: () {
+                    Navigator.of(bcontext).pop();
+                    _showBlockConfirmation();
+                  },
+                ),
+                _buildMenuTile(
+                  context: bcontext,
+                  icon: LucideIcons.flag,
+                  label: 'Report post',
+                  destructive: true,
+                  onTap: () {
+                    Navigator.of(bcontext).pop();
+                    _showReportConfirmation();
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
             ),
-            ListTile(
-              leading: const Icon(LucideIcons.x, color: Colors.grey),
-              title: const Text('Cancel'),
-              onTap: () => Navigator.of(bcontext).pop(),
-            ),
-          ],
+          ),
         );
       },
+    );
+  }
+
+  Widget _buildMenuTile({
+    required BuildContext context,
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool destructive = false,
+  }) {
+    final theme = Theme.of(context);
+    final color = destructive ? Colors.red : theme.colorScheme.onSurface;
+    return ListTile(
+      leading: Icon(icon, color: color),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      onTap: onTap,
     );
   }
 
@@ -1555,6 +1835,61 @@ class _PostCardState extends State<PostCard> {
       ),
     );
   }
+
+  void _showBlockConfirmation() {
+    final targetUserId = widget.authorId?.trim();
+    if (targetUserId == null || targetUserId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('This post does not have a blockable author.')),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (dcontext) => AlertDialog(
+        title: const Text('Block user'),
+        content: const Text('Do you want to block this user?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dcontext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final navigator = Navigator.of(dcontext);
+              final scaffoldMessenger = ScaffoldMessenger.of(context);
+              try {
+                await AppwriteService.blockUser(targetUserId);
+                if (!mounted) return;
+                navigator.pop();
+                scaffoldMessenger.showSnackBar(
+                  const SnackBar(content: Text('User blocked.')),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                navigator.pop();
+                scaffoldMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Failed to block user. Please try again.'),
+                  ),
+                );
+              }
+            },
+            child: const Text('Block', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _truncateDisplayName(String value) {
+    final trimmed = value.trim();
+    if (trimmed.length <= _displayNameCharacterLimit) {
+      return trimmed;
+    }
+    return '${trimmed.substring(0, _displayNameCharacterLimit)}...';
+  }
 }
 
 class _AnimatedCount extends StatelessWidget {
@@ -1566,10 +1901,37 @@ class _AnimatedCount extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(
-      value.toString(),
+      _formatCompactCount(value),
       style: TextStyle(color: color ?? Colors.grey[700], fontSize: 14),
     );
   }
+}
+
+String _formatCompactCount(int value) {
+  final absValue = value.abs();
+  if (absValue >= 1000000000) {
+    final formatted = (value / 1000000000).toStringAsFixed(
+      absValue >= 10000000000 ? 0 : 1,
+    );
+    return '${_trimTrailingZero(formatted)}b';
+  }
+  if (absValue >= 1000000) {
+    final formatted = (value / 1000000).toStringAsFixed(
+      absValue >= 10000000 ? 0 : 1,
+    );
+    return '${_trimTrailingZero(formatted)}m';
+  }
+  if (absValue >= 1000) {
+    final formatted = (value / 1000).toStringAsFixed(
+      absValue >= 10000 ? 0 : 1,
+    );
+    return '${_trimTrailingZero(formatted)}k';
+  }
+  return value.toString();
+}
+
+String _trimTrailingZero(String value) {
+  return value.endsWith('.0') ? value.substring(0, value.length - 2) : value;
 }
 
 class _ExpandableText extends StatefulWidget {
@@ -1604,9 +1966,8 @@ class _ExpandableTextState extends State<_ExpandableText> {
               widget.text,
               style: widget.style,
               maxLines: _expanded ? null : 3,
-              overflow: _expanded
-                  ? TextOverflow.visible
-                  : TextOverflow.ellipsis,
+              overflow:
+                  _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
             ),
             if (overflow)
               GestureDetector(

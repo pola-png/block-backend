@@ -1,18 +1,24 @@
 import 'dart:async';
 
 import 'dart:io' show Platform;
+import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
 import 'package:lucide_icons/lucide_icons.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../models/post.dart';
 import '../screens/comment_screen.dart';
+import '../screens/profile_screen.dart';
 import '../services/appwrite_service.dart';
+import '../services/native_ad_preload_service.dart';
 import '../services/storage_service.dart';
 import '../utils/share_utils.dart';
-import '../services/ad_helper.dart';
-import '../services/ad_frequency_service.dart';
+import '../services/post_view_retry_queue.dart';
+import '../services/reel_ads_controller.dart';
+import '../services/reel_playback_controller.dart';
+import '../widgets/reel_author_footer.dart';
+import '../widgets/reel_reaction_rail.dart';
+import '../main.dart';
 
 class ReelPlayer extends StatefulWidget {
   final Post post;
@@ -20,6 +26,15 @@ class ReelPlayer extends StatefulWidget {
   final VoidCallback? onGuestAction;
   final String? authorId;
   final bool enableAds;
+  final bool isActive;
+  final bool isDetailSurface;
+  final String? initialResolvedVideoUrl;
+  final String? initialAuthorName;
+  final String? initialAuthorAvatarUrl;
+  final Post? nextEpisode;
+  final Future<void> Function()? onPlayNextEpisode;
+  final Widget? bottomOverlay;
+  final double bottomInset;
 
   const ReelPlayer({
     super.key,
@@ -28,577 +43,448 @@ class ReelPlayer extends StatefulWidget {
     this.onGuestAction,
     this.authorId,
     this.enableAds = true,
+    this.isActive = true,
+    this.isDetailSurface = false,
+    this.initialResolvedVideoUrl,
+    this.initialAuthorName,
+    this.initialAuthorAvatarUrl,
+    this.nextEpisode,
+    this.onPlayNextEpisode,
+    this.bottomOverlay,
+    this.bottomInset = 0,
   });
 
   @override
   State<ReelPlayer> createState() => _ReelPlayerState();
 }
 
-class _ReelPlayerState extends State<ReelPlayer> {
-  VideoPlayerController? _controller;
-  Future<void>? _initFuture;
-  bool _isPlaying = false;
-  bool _showControls = true;
+class _ReelPlayerState extends State<ReelPlayer>
+    with WidgetsBindingObserver, RouteAware {
   bool _isLiked = false;
+  bool _isSaved = false;
+  String _displayName = '';
+  String? _resolvedAvatarUrl;
   bool _hasReposted = false;
   int _likeCount = 0;
   int _commentCount = 0;
   int _repostCount = 0;
-  int _impressionCount = 0;
+  int? _viewCount;
   int _shareCount = 0;
-  Timer? _hideControlsTimer;
-  bool _countedView = false;
-  RewardedAd? _rewardedAd;
-  bool _rewardedLoading = false;
-  NativeAd? _nativeAd;
-  bool _nativeLoaded = false;
-  bool _nativeLoading = false;
-  bool _showNativeOverlay = false;
-  bool _canDismissNative = false;
-  bool _showRewardedOverlay = false;
-  DateTime? _lastTick;
+  String _postContent = '';
+  RealtimeSubscription? _postSub;
+  late final ReelAdsController _adsController;
+  ReelPlaybackController? _playbackController;
+  late final Widget _videoSurface;
+  Timer? _nextEpisodeTimer;
+  int _nextEpisodeCountdown = 0;
+  bool _nextEpisodeDismissed = false;
   bool get _adsEnabled =>
       widget.enableAds && !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  String get _creatorId {
+    final direct = widget.authorId?.trim();
+    if (direct != null && direct.isNotEmpty) return direct;
+    final source = widget.post.sourceUserId?.trim();
+    if (source != null && source.isNotEmpty) return source;
+    return '';
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _likeCount = widget.post.likes;
     _commentCount = widget.post.comments;
     _repostCount = widget.post.reposts;
-    _impressionCount = widget.post.impressions;
+    _viewCount = null;
     _shareCount = 0;
-
-    final url = widget.post.videoUrl;
-    if (url != null && url.isNotEmpty) {
-      _controller = VideoPlayerController.networkUrl(Uri.parse(url));
-      _controller!.setLooping(true);
-      _initFuture = _controller!.initialize().then((_) async {
-        _controller!.addListener(_onVideoTick);
-        if (mounted) setState(() {});
-      });
-    }
+    _postContent = widget.post.content;
+    _displayName = widget.initialAuthorName?.trim().isNotEmpty == true
+        ? widget.initialAuthorName!.trim()
+        : widget.post.username;
+    _resolvedAvatarUrl = _normalizeImmediateAvatar(
+      widget.initialAuthorAvatarUrl ?? widget.post.userAvatar,
+    );
+    _adsController = ReelAdsController(
+      postId: widget.post.id,
+      creatorIdProvider: () => _creatorId,
+      startPlayback: () =>
+          _playbackController?.startPlayback() ?? Future.value(),
+      pausePlayback: () =>
+          _playbackController?.pausePlayback() ?? Future.value(),
+      adsEnabled: _adsEnabled,
+    );
     if (_adsEnabled) {
-      _loadRewarded();
-      _prefetchNative();
+      _adsController.loadRewarded();
+    }
+    unawaited(_initUserState());
+    _loadAuthorProfile();
+    _subscribePostRealtime();
+    final seededUrl = widget.initialResolvedVideoUrl?.trim();
+    final url = (seededUrl != null && seededUrl.isNotEmpty)
+        ? seededUrl
+        : widget.post.previewVideoUrl ??
+            widget.post.videoUrl ??
+            widget.post.hlsVideoUrl;
+    if (url != null && url.isNotEmpty) {
+      _playbackController = ReelPlaybackController(
+        rawVideoUrl: url,
+        isActive: widget.isActive,
+        adsEnabled: () => _adsEnabled,
+        rewardedReady: () => _adsController.rewardedReady,
+        showRewarded: ({bool resumePlayback = true}) =>
+            _adsController.showRewarded(resumePlayback: resumePlayback),
+        loadRewarded: _adsController.loadRewarded,
+        onViewCounted: () async {
+          await PostViewRetryQueue.record(widget.post.id, 1);
+        },
+      );
+      _playbackController!.addListener(_handlePlaybackStateChanged);
+      _videoSurface = _ReelVideoSurface(
+        playbackController: _playbackController!,
+        adsController: _adsController,
+        isInitiallyActive: widget.isActive,
+      );
+      if (widget.isActive || widget.isDetailSurface) {
+        unawaited(_preparePlaybackController());
+      }
+    } else {
+      _videoSurface = const Center(
+        child: Text('Video unavailable'),
+      );
+    }
+  }
+
+  void _handlePlaybackStateChanged() {
+    final playback = _playbackController;
+    if (playback == null) return;
+    if (!playback.playbackCompleted ||
+        widget.nextEpisode == null ||
+        widget.onPlayNextEpisode == null) {
+      _cancelNextEpisodeCountdown();
+      return;
+    }
+    if (_nextEpisodeDismissed || _nextEpisodeTimer != null) {
+      return;
+    }
+    _nextEpisodeCountdown = 4;
+    _nextEpisodeTimer =
+        Timer.periodic(const Duration(seconds: 1), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_nextEpisodeCountdown <= 1) {
+        timer.cancel();
+        _nextEpisodeTimer = null;
+        await widget.onPlayNextEpisode?.call();
+        return;
+      }
+      setState(() {
+        _nextEpisodeCountdown -= 1;
+      });
+    });
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _cancelNextEpisodeCountdown({bool resetDismissed = true}) {
+    _nextEpisodeTimer?.cancel();
+    _nextEpisodeTimer = null;
+    if (mounted && _nextEpisodeCountdown != 0) {
+      setState(() {
+        _nextEpisodeCountdown = 0;
+        if (resetDismissed) {
+          _nextEpisodeDismissed = false;
+        }
+      });
+      return;
+    }
+    _nextEpisodeCountdown = 0;
+    if (resetDismissed) {
+      _nextEpisodeDismissed = false;
+    }
+  }
+
+  Future<void> _preparePlaybackController() async {
+    if (widget.isDetailSurface) {
+      NativeAdPreloadService.releaseAll();
+    }
+    final playback = _playbackController;
+    if (playback == null) return;
+    if (!widget.isActive && !widget.isDetailSurface) return;
+    await playback.initialize();
+    if (!mounted) return;
+    await playback.attemptAutoplay();
+  }
+
+  String? _normalizeImmediateAvatar(String? rawAvatar) {
+    final avatar = rawAvatar?.trim();
+    if (avatar == null || avatar.isEmpty) return null;
+    return StorageService.getImageDisplayUrlSync(avatar);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
     }
   }
 
   @override
   void dispose() {
-    _hideControlsTimer?.cancel();
-    _controller?.removeListener(_onVideoTick);
-    _controller?.dispose();
-    _nativeAd?.dispose();
-    _rewardedAd?.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    appRouteObserver.unsubscribe(this);
+    _postSub?.close();
+    final playback = _playbackController;
+    if (playback != null) {
+      playback.removeListener(_handlePlaybackStateChanged);
+      playback.dispose();
+    }
+    _nextEpisodeTimer?.cancel();
+    _adsController.dispose();
+    NativeAdPreloadService.releaseAll();
     super.dispose();
   }
 
-  Future<String?> _resolveAvatar(String raw) async {
-    if (raw.isEmpty) return null;
-    if (raw.contains('cloud.appwrite.io') || raw.startsWith('http')) {
-      return raw;
+  @override
+  void didUpdateWidget(covariant ReelPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.authorId != widget.authorId ||
+        oldWidget.post.userAvatar != widget.post.userAvatar ||
+        oldWidget.post.id != widget.post.id) {
+      _loadAuthorProfile();
+    }
+    _playbackController?.setActive(widget.isActive);
+    if (!oldWidget.isActive && widget.isActive) {
+      unawaited(_preparePlaybackController());
+    } else if (oldWidget.isActive && !widget.isActive) {
+      unawaited(_playbackController?.pausePlayback() ?? Future.value());
+    }
+  }
+
+  @override
+  void didPushNext() {
+    // Navigation on top of the reel should pause immediately and keep the
+    // current frame instead of tearing the controller down.
+    unawaited(_playbackController?.pausePlayback() ?? Future.value());
+    NativeAdPreloadService.releaseAll();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_playbackController?.pausePlayback() ?? Future.value());
+    }
+  }
+
+  Future<void> _initUserState() async {
+    final user = await AppwriteService.getCurrentUser();
+    if (!mounted) return;
+    if (user == null) {
+      setState(() {
+        _isSaved = false;
+        _isLiked = false;
+      });
+      return;
+    }
+    bool isLiked = false;
+    bool isSaved = false;
+    try {
+      isLiked = await AppwriteService.isPostLikedBy(user.$id, widget.post.id);
+      isSaved = await AppwriteService.isPostSavedBy(user.$id, widget.post.id);
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _isLiked = isLiked;
+      _isSaved = isSaved;
+    });
+  }
+
+  Future<void> _loadAuthorProfile() async {
+    final authorId = widget.authorId?.trim();
+    if (authorId == null || authorId.isEmpty) {
+      final fallbackAvatar = await _resolveAvatarUrl(widget.post.userAvatar);
+      if (!mounted) return;
+      setState(() {
+        _displayName = '';
+        _resolvedAvatarUrl = fallbackAvatar;
+      });
+      return;
     }
     try {
-      return await WasabiService.getSignedUrl(raw);
+      final profile = await AppwriteService.getProfileByUserId(authorId);
+      final displayName = (profile?.data['displayName'] as String?)?.trim();
+      final avatar = await _resolveAvatarUrl(
+        ((profile?.data['avatarUrl'] as String?)?.trim().isNotEmpty == true)
+            ? (profile!.data['avatarUrl'] as String)
+            : widget.post.userAvatar,
+      );
+      if (!mounted) return;
+      setState(() {
+        _displayName = displayName?.isNotEmpty == true ? displayName! : '';
+        _resolvedAvatarUrl = avatar;
+      });
+    } catch (_) {
+      final fallbackAvatar = await _resolveAvatarUrl(widget.post.userAvatar);
+      if (!mounted) return;
+      setState(() {
+        _displayName = '';
+        _resolvedAvatarUrl = fallbackAvatar;
+      });
+    }
+  }
+
+  void _subscribePostRealtime() {
+    try {
+      final channel =
+          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postsCollectionId}.documents';
+      _postSub = AppwriteService.realtime.subscribe([channel]);
+      _postSub?.stream.listen((event) {
+        if (!mounted || event.events.isEmpty) return;
+        final payload = event.payload;
+        final payloadId =
+            payload[r'$id']?.toString() ?? payload['id']?.toString();
+        if (payloadId != widget.post.id) return;
+        if (event.events.any((e) => e.contains('.delete'))) return;
+        setState(() {
+          _likeCount = _readInt(payload, 'likes', _likeCount);
+          _commentCount = _readInt(payload, 'comments', _commentCount);
+          _repostCount = _readInt(payload, 'reposts', _repostCount);
+          _viewCount = _readInt(payload, 'views', _viewCount ?? 0);
+          final content = payload['content']?.toString().trim();
+          if (content != null && content.isNotEmpty) _postContent = content;
+        });
+      });
+    } catch (_) {}
+  }
+
+  int _readInt(Map<String, dynamic> data, String key, int fallback) {
+    final raw = data[key];
+    if (raw is int) return raw;
+    return int.tryParse('$raw') ?? fallback;
+  }
+
+  Future<String?> _resolveAvatarUrl(String? rawAvatar) async {
+    final avatar = rawAvatar?.trim();
+    if (avatar == null || avatar.isEmpty) {
+      return null;
+    }
+    if (avatar.startsWith('http')) {
+      return avatar;
+    }
+    try {
+      return await StorageService.getImageDisplayUrl(avatar);
     } catch (_) {
       return null;
     }
   }
 
+  Future<void> _openAuthorProfile() async {
+    final authorId = widget.authorId?.trim();
+    if (authorId == null || authorId.isEmpty) {
+      return;
+    }
+    final navigator = Navigator.of(context);
+    await _playbackController?.pausePlayback();
+    if (!mounted) return;
+    navigator.push(
+      MaterialPageRoute(
+        builder: (_) => ProfileScreen(userId: authorId),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final nextEpisode = widget.nextEpisode;
     return Scaffold(
       backgroundColor: theme.colorScheme.background,
       body: Stack(
         children: [
-          Positioned.fill(child: _buildVideo()),
-          // Gradient overlay for text legibility
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: true,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [
-                      Colors.black.withOpacity(0.6),
-                      Colors.transparent,
-                    ],
-                  ),
+          Positioned.fill(child: _videoSurface),
+          Positioned(
+            top: 16,
+            right: 12,
+            child: SafeArea(
+              bottom: false,
+              child: IconButton(
+                onPressed: _showReportMenu,
+                icon: const Icon(Icons.more_vert, color: Colors.white),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black.withOpacity(0.25),
                 ),
               ),
             ),
           ),
           // Right side vertical reactions (like Watch reaction section, but stacked)
-          Positioned(
-            right: 12,
-            bottom: 80,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildReactionButton(
-                  icon: _isLiked ? LucideIcons.heart : LucideIcons.heart,
-                  iconColor: _isLiked ? const Color(0xFFFF2D55) : Colors.white,
-                  count: _likeCount,
-                  onTap: _toggleLike,
-                ),
-                const SizedBox(height: 18),
-                _buildReactionButton(
-                  icon: LucideIcons.messageCircle,
-                  iconColor: Colors.white,
-                  count: _commentCount,
-                  onTap: _openComments,
-                ),
-                const SizedBox(height: 18),
-                _buildReactionButton(
-                  icon: LucideIcons.repeat2,
-                  iconColor: _hasReposted ? const Color(0xFF1DA1F2) : Colors.white,
-                  count: _repostCount,
-                  onTap: _repostPost,
-                ),
-                const SizedBox(height: 18),
-                _buildReactionButton(
-                  icon: LucideIcons.share2,
-                  iconColor: Colors.white,
-                  count: _shareCount,
-                  onTap: _sharePost,
-                ),
-                const SizedBox(height: 18),
-                _buildReactionButton(
-                  icon: LucideIcons.barChart2,
-                  iconColor: Colors.white,
-                  count: _impressionCount,
-                  label: 'Views',
-                  onTap: () {},
-                ),
-              ],
-            ),
+          ReelReactionRail(
+            isLiked: _isLiked,
+            isSaved: _isSaved,
+            hasReposted: _hasReposted,
+            likeCount: _likeCount,
+            commentCount: _commentCount,
+            repostCount: _repostCount,
+            shareCount: _shareCount,
+            onLike: _toggleLike,
+            onSave: _toggleSave,
+            onComment: _openComments,
+            onRepost: _repostPost,
+            onShare: _sharePost,
+            bottomInset: widget.bottomInset,
           ),
-          // Bottom user + caption
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: 20,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                FutureBuilder<String?>(
-                  future: _resolveAvatar(widget.post.userAvatar),
-                  builder: (context, snap) {
-                    final url = snap.data;
-                    if (url == null || url.isEmpty) {
-                      return CircleAvatar(
-                        radius: 20,
-                        backgroundColor: Colors.grey[300],
-                        child: const Icon(Icons.person, color: Colors.grey),
-                      );
-                    }
-                    return CircleAvatar(
-                      radius: 20,
-                      backgroundColor: Colors.grey[300],
-                      backgroundImage: NetworkImage(url),
-                    );
+          ReelAuthorFooter(
+            displayName: _displayName,
+            avatarUrl: _resolvedAvatarUrl,
+            postContent: _postContent,
+            viewCount: _viewCount,
+            onOpenAuthorProfile: _openAuthorProfile,
+            bottomInset: widget.bottomInset,
+          ),
+          if (nextEpisode != null &&
+              _playbackController?.playbackCompleted == true &&
+              !_nextEpisodeDismissed)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 120,
+              child: SafeArea(
+                top: false,
+                child: _UpNextEpisodeCard(
+                  post: nextEpisode,
+                  countdown: _nextEpisodeCountdown,
+                  onPlayNow: () async {
+                    _cancelNextEpisodeCountdown(resetDismissed: false);
+                    await widget.onPlayNextEpisode?.call();
+                  },
+                  onDismiss: () {
+                    _cancelNextEpisodeCountdown(resetDismissed: false);
+                    setState(() {
+                      _nextEpisodeDismissed = true;
+                    });
                   },
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              widget.post.username,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      if (widget.post.content.isNotEmpty)
-                        Text(
-                          widget.post.content,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.9),
-                            fontSize: 13,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
+          if (widget.bottomOverlay != null)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 16,
+              child: SafeArea(
+                top: false,
+                child: widget.bottomOverlay!,
+              ),
+            ),
         ],
       ),
     );
-  }
-
-  Widget _buildVideo() {
-    if (_controller == null) {
-      return const Center(
-        child: Text('Video unavailable'),
-      );
-    }
-    return FutureBuilder<void>(
-      future: _initFuture,
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done || !_controller!.value.isInitialized) {
-          return const Center(
-            child: CircularProgressIndicator(color: Colors.white),
-          );
-        }
-        // Force vertical 9:16-ish display, letterboxing if needed.
-        final size = _controller!.value.size;
-        final isVertical = size.height >= size.width;
-        final aspect = isVertical ? (9 / 16) : _controller!.value.aspectRatio;
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () {
-            setState(() => _showControls = true);
-            _scheduleHideControls();
-          },
-          onDoubleTap: _togglePlay,
-          child: Center(
-            child: AspectRatio(
-              aspectRatio: aspect,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  VideoPlayer(_controller!),
-                  // Very subtle center play/pause overlay
-                  AnimatedOpacity(
-                    opacity: _showControls ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 200),
-                    child: IgnorePointer(
-                      // Visual only; taps are handled by the parent GestureDetector.
-                      ignoring: true,
-                      child: Center(
-                        child: Icon(
-                          _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                          size: 48,
-                          color: Colors.white.withOpacity(0.9),
-                        ),
-                      ),
-                    ),
-                  ),
-                  // Bottom-right duration text
-                  Positioned(
-                    right: 12,
-                    bottom: 8,
-                    child: Text(
-                      _formatDuration(
-                        _controller!.value.position,
-                        _controller!.value.duration,
-                      ),
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                    ),
-                  ),
-                  if (_showRewardedOverlay || _showNativeOverlay)
-                    Positioned.fill(
-                      child: Container(
-                        color: Colors.black.withOpacity(0.7),
-                        child: Center(
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final screenH = MediaQuery.of(context).size.height;
-                              final maxH = constraints.maxHeight.isFinite ? constraints.maxHeight : screenH;
-                              final usableH = (maxH - 48).clamp(120.0, maxH);
-                              final adHeight = (usableH * 0.6).clamp(120.0, usableH);
-                              return Material(
-                                color: Colors.black.withOpacity(0.6),
-                                borderRadius: BorderRadius.circular(12),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(12),
-                                  child: SingleChildScrollView(
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        SizedBox(
-                                          height: adHeight,
-                                          width: double.infinity,
-                                        child: _showRewardedOverlay
-                                            ? const Center(
-                                                child: Text(
-                                                  'Ad playing...',
-                                                  style: TextStyle(color: Colors.white),
-                                                ),
-                                              )
-                                            : (_nativeLoaded && _nativeAd != null
-                                                ? ClipRRect(
-                                                    borderRadius: BorderRadius.circular(8),
-                                                    child: AdWidget(ad: _nativeAd!),
-                                                  )
-                                                : const SizedBox.shrink()),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        const Text(
-                                          'Ad playing... video will resume',
-                                          style: TextStyle(color: Colors.white),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        if (!_showRewardedOverlay)
-                                          ElevatedButton(
-                                            onPressed: _canDismissNative
-                                                ? _closeNativeOverlay
-                                                : null,
-                                            child: const Text('Continue'),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildReactionButton({
-    required IconData icon,
-    required Color iconColor,
-    required int count,
-    required VoidCallback onTap,
-    String? label,
-  }) {
-    return Column(
-      children: [
-        InkResponse(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(999),
-          radius: 28,
-          child: Container(
-            padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.25),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: iconColor, size: 26),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              count.toString(),
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-            ),
-            if (label != null) ...[
-              const SizedBox(width: 2),
-              Text(
-                label,
-                style: const TextStyle(color: Colors.white70, fontSize: 10),
-              ),
-            ],
-          ],
-        ),
-      ],
-    );
-  }
-
-  void _togglePlay() async {
-    if (_controller == null) return;
-    if (_controller!.value.isPlaying) {
-      await _controller!.pause();
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-          _showControls = true;
-        });
-      }
-      _hideControlsTimer?.cancel();
-    } else {
-      await _playWithGate();
-    }
-  }
-
-  void _scheduleHideControls() {
-    _hideControlsTimer?.cancel();
-    if (kIsWeb) {
-      if (!_showControls) {
-        setState(() => _showControls = true);
-      }
-      return;
-    }
-    if (!_isPlaying) {
-      setState(() => _showControls = true);
-      return;
-    }
-    setState(() => _showControls = true);
-    _hideControlsTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      if (_isPlaying) {
-        setState(() => _showControls = false);
-      }
-    });
-  }
-
-  void _onVideoTick() {
-    if (!mounted || _controller == null) return;
-    final now = DateTime.now();
-    if (_lastTick != null && now.difference(_lastTick!).inMilliseconds < 500) return;
-    _lastTick = now;
-    setState(() {});
-  }
-
-  Future<void> _playWithGate() async {
-    if (_controller == null) return;
-    if (!_adsEnabled) {
-      await _startPlayback();
-      return;
-    }
-    final needsRewarded = await AdFrequencyService.shouldShowRewarded(widget.post.id);
-    if (needsRewarded) {
-      await _showRewarded();
-    } else {
-      await _showNative();
-    }
-  }
-
-  Future<void> _startPlayback() async {
-    if (_controller == null) return;
-    await _controller!.play();
-    if (mounted) {
-      setState(() {
-        _isPlaying = true;
-        _showControls = true;
-      });
-      if (!_countedView) {
-        _countedView = true;
-        _impressionCount += 1;
-        AppwriteService.incrementPostImpressions(widget.post.id, 1);
-      }
-      _scheduleHideControls();
-    }
-  }
-
-  void _loadRewarded() {
-    if (!_adsEnabled || _rewardedLoading || _rewardedAd != null) return;
-    _rewardedLoading = true;
-    RewardedAd.load(
-      adUnitId: AdHelper.rewarded,
-      request: const AdRequest(),
-      rewardedAdLoadCallback: RewardedAdLoadCallback(
-        onAdLoaded: (ad) {
-          _rewardedAd = ad;
-          _rewardedLoading = false;
-        },
-        onAdFailedToLoad: (_) {
-          _rewardedAd = null;
-          _rewardedLoading = false;
-        },
-      ),
-    );
-  }
-
-  Future<void> _showRewarded() async {
-    if (!_adsEnabled) {
-      await _startPlayback();
-      return;
-    }
-    final ad = _rewardedAd;
-    if (ad == null) {
-      _loadRewarded();
-      await _startPlayback();
-      return;
-    }
-    setState(() => _showRewardedOverlay = true);
-    final completer = Completer<void>();
-    ad.fullScreenContentCallback = FullScreenContentCallback(
-      onAdDismissedFullScreenContent: (ad) {
-        ad.dispose();
-        _rewardedAd = null;
-        _loadRewarded();
-        setState(() => _showRewardedOverlay = false);
-        completer.complete();
-      },
-      onAdFailedToShowFullScreenContent: (ad, _) {
-        ad.dispose();
-        _rewardedAd = null;
-        _loadRewarded();
-        setState(() => _showRewardedOverlay = false);
-        completer.complete();
-      },
-    );
-    ad.show(onUserEarnedReward: (_, reward) {});
-    await completer.future;
-    await AdFrequencyService.markRewarded(widget.post.id);
-    setState(() => _showRewardedOverlay = false);
-    await _startPlayback();
-  }
-
-  Future<void> _showNative() async {
-    if (!_adsEnabled || !Platform.isAndroid) {
-      await _startPlayback();
-      return;
-    }
-    if (!_nativeLoaded || _nativeAd == null) {
-      await _startPlayback();
-      return;
-    }
-    setState(() {
-      _showNativeOverlay = true;
-      _canDismissNative = true;
-    });
-  }
-
-  void _closeNativeOverlay() {
-    setState(() {
-      _showNativeOverlay = false;
-    });
-    _startPlayback();
-  }
-
-  void _prefetchNative() {
-    if (!_adsEnabled || !Platform.isAndroid) return;
-    if (_nativeLoading || _nativeAd != null) return;
-    _nativeLoading = true;
-    _nativeLoaded = false;
-    _nativeAd?.dispose();
-    _nativeAd = NativeAd(
-      adUnitId: AdHelper.native,
-      factoryId: 'cardNative',
-      request: const AdRequest(),
-      listener: NativeAdListener(
-        onAdLoaded: (ad) {
-          if (!mounted) return;
-          setState(() {
-            _nativeLoaded = true;
-            _nativeLoading = false;
-          });
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          if (!mounted) return;
-          setState(() {
-            _nativeAd = null;
-            _nativeLoading = false;
-          });
-        },
-      ),
-    )..load();
   }
 
   Future<void> _toggleLike() async {
@@ -633,10 +519,11 @@ class _ReelPlayerState extends State<ReelPlayer> {
       widget.onGuestAction?.call();
       return;
     }
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => CommentScreen(post: widget.post),
-      ),
+    showCommentModal(
+      context,
+      post: widget.post,
+      isGuest: widget.isGuest,
+      onGuestAction: widget.onGuestAction,
     );
   }
 
@@ -669,6 +556,25 @@ class _ReelPlayerState extends State<ReelPlayer> {
     }
   }
 
+  Future<void> _toggleSave() async {
+    if (widget.isGuest) {
+      widget.onGuestAction?.call();
+      return;
+    }
+    final targetSave = !_isSaved;
+    setState(() => _isSaved = targetSave);
+    try {
+      if (targetSave) {
+        await AppwriteService.savePost(widget.post.id);
+      } else {
+        await AppwriteService.unsavePost(widget.post.id);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isSaved = !targetSave);
+    }
+  }
+
   void _sharePost() {
     setState(() => _shareCount++);
     AppwriteService.incrementPostShares(widget.post.id, 1);
@@ -679,12 +585,450 @@ class _ReelPlayerState extends State<ReelPlayer> {
     );
   }
 
-  String _formatDuration(Duration position, Duration total) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    final posMinutes = two(position.inMinutes.remainder(60));
-    final posSeconds = two(position.inSeconds.remainder(60));
-    final totMinutes = two(total.inMinutes.remainder(60));
-    final totSeconds = two(total.inSeconds.remainder(60));
-    return '$posMinutes:$posSeconds / $totMinutes:$totSeconds';
+  void _showReportMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (bcontext) {
+        final theme = Theme.of(bcontext);
+        return SafeArea(
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _buildMenuTile(
+                  context: bcontext,
+                  icon: LucideIcons.userX,
+                  label: 'Block user',
+                  destructive: true,
+                  onTap: () {
+                    Navigator.of(bcontext).pop();
+                    _showBlockConfirmation();
+                  },
+                ),
+                _buildMenuTile(
+                  context: bcontext,
+                  icon: LucideIcons.flag,
+                  label: 'Report reel',
+                  destructive: true,
+                  onTap: () {
+                    Navigator.of(bcontext).pop();
+                    _showReportConfirmation();
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMenuTile({
+    required BuildContext context,
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool destructive = false,
+  }) {
+    final theme = Theme.of(context);
+    final color = destructive ? Colors.red : theme.colorScheme.onSurface;
+    return ListTile(
+      leading: Icon(icon, color: color),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      onTap: onTap,
+    );
+  }
+
+  void _showReportConfirmation() {
+    showDialog(
+      context: context,
+      builder: (dcontext) => AlertDialog(
+        title: const Text('Report Reel'),
+        content: const Text('Are you sure you want to report this reel?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dcontext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final navigator = Navigator.of(dcontext);
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                await AppwriteService.reportPost(
+                  widget.post.id,
+                  'Inappropriate content',
+                );
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Reel reported.')),
+                );
+              } catch (_) {
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Failed to report reel.')),
+                );
+              }
+            },
+            child: const Text('Report', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showBlockConfirmation() {
+    final targetUserId = widget.authorId?.trim();
+    if (targetUserId == null || targetUserId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This reel does not have a blockable author.'),
+        ),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (dcontext) => AlertDialog(
+        title: const Text('Block user'),
+        content: const Text('Do you want to block this user?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dcontext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final navigator = Navigator.of(dcontext);
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                await AppwriteService.blockUser(targetUserId);
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('User blocked.')),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Failed to block user. Please try again.'),
+                  ),
+                );
+              }
+            },
+            child: const Text('Block', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
   }
 }
+
+class _UpNextEpisodeCard extends StatelessWidget {
+  const _UpNextEpisodeCard({
+    required this.post,
+    required this.countdown,
+    required this.onPlayNow,
+    required this.onDismiss,
+  });
+
+  final Post post;
+  final int countdown;
+  final Future<void> Function() onPlayNow;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final title = (post.title?.trim().isNotEmpty == true)
+        ? post.title!.trim()
+        : post.content.trim().isNotEmpty
+            ? post.content.trim()
+            : 'Next episode';
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.78),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.12)),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: SizedBox(
+              width: 72,
+              height: 96,
+              child: post.thumbnailUrl != null && post.thumbnailUrl!.isNotEmpty
+                  ? Image.network(post.thumbnailUrl!, fit: BoxFit.cover)
+                  : Container(
+                      color: Colors.white.withOpacity(0.08),
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.play_circle_fill_rounded,
+                        color: Colors.white,
+                        size: 28,
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Up next',
+                  style: TextStyle(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  countdown > 0 ? 'Playing in ${countdown}s' : 'Ready to play',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.72),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            children: [
+              FilledButton(
+                onPressed: onPlayNow,
+                child: const Text('Play'),
+              ),
+              TextButton(
+                onPressed: onDismiss,
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReelVideoSurface extends StatefulWidget {
+  final ReelPlaybackController playbackController;
+  final ReelAdsController adsController;
+  final bool isInitiallyActive;
+
+  const _ReelVideoSurface({
+    required this.playbackController,
+    required this.adsController,
+    required this.isInitiallyActive,
+  });
+
+  @override
+  State<_ReelVideoSurface> createState() => _ReelVideoSurfaceState();
+}
+
+class _ReelVideoSurfaceState extends State<_ReelVideoSurface>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => false;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        widget.playbackController,
+        widget.adsController,
+      ]),
+      builder: (context, _) {
+        final playback = widget.playbackController;
+        final controller = playback.controller;
+        if (controller == null) {
+          if (playback.isActive) {
+            playback.queueInitializeAfterFirstFrame();
+          }
+          return Center(
+            child: CircularProgressIndicator(
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          );
+        }
+        return FutureBuilder<void>(
+          future: playback.initFuture,
+          builder: (context, snap) {
+            if (!controller.value.isInitialized) {
+              return Center(
+                child: CircularProgressIndicator(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              );
+            }
+            if (!playback.autoplayAttempted && widget.isInitiallyActive) {
+              playback.queueAutoplayAfterFirstFrame();
+            }
+            final size = controller.value.size;
+            final aspect = controller.value.aspectRatio == 0
+                ? (size.width > 0 && size.height > 0
+                    ? size.width / size.height
+                    : 9 / 16)
+                : controller.value.aspectRatio;
+            return RepaintBoundary(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => playback.togglePrimaryAction(),
+                child: SizedBox.expand(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: size.width,
+                          height: size.height,
+                          child: AspectRatio(
+                            aspectRatio: aspect,
+                            child: VideoPlayer(controller),
+                          ),
+                        ),
+                      ),
+                      AnimatedOpacity(
+                        opacity: playback.showControls ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: IgnorePointer(
+                          ignoring: true,
+                          child: Center(
+                            child: Icon(
+                              playback.playbackCompleted && !playback.isPlaying
+                                  ? Icons.replay_circle_filled
+                                  : (playback.isPlaying
+                                      ? Icons.pause_circle_filled
+                                      : Icons.play_circle_fill),
+                              size: 48,
+                              color: Colors.white.withOpacity(0.9),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        right: 12,
+                        bottom: 8,
+                        child: Text(
+                          playback.formatDuration(
+                            controller.value.position,
+                            controller.value.duration,
+                          ),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                      if (widget.adsController.showRewardedOverlay)
+                        Positioned.fill(
+                          child: Container(
+                            color: Colors.black.withOpacity(0.7),
+                            child: Center(
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final screenH =
+                                      MediaQuery.of(context).size.height;
+                                  final maxH = constraints.maxHeight.isFinite
+                                      ? constraints.maxHeight
+                                      : screenH;
+                                  final usableH =
+                                      (maxH - 48).clamp(120.0, maxH);
+                                  final adHeight =
+                                      (usableH * 0.6).clamp(120.0, usableH);
+                                  return Material(
+                                    color: Colors.black.withOpacity(0.6),
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(12),
+                                      child: SingleChildScrollView(
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            SizedBox(
+                                              height: adHeight,
+                                              width: double.infinity,
+                                              child: const Center(
+                                                child: Text(
+                                                  'Loading ads...',
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            const Text(
+                                              'Loading ads... video will resume',
+                                              style: TextStyle(
+                                                  color: Colors.white),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+

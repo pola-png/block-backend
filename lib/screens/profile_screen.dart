@@ -5,17 +5,21 @@ import 'package:appwrite/models.dart' as aw;
 import '../services/appwrite_service.dart';
 import '../services/storage_service.dart';
 import '../services/profile_cache.dart';
+import '../utils/share_utils.dart';
 import '../models/post.dart';
 import '../widgets/post_card.dart';
-import '../widgets/reel_player.dart';
 import '../widgets/pending_upload_banner.dart';
+import '../widgets/tv_focusable_action.dart';
+import 'reel_detail_screen.dart';
 import 'video_detail_screen.dart';
 import 'post_detail_screen.dart';
 import 'edit_profile_screen.dart';
+import 'profile_menu_screen.dart';
 import '../models/chat.dart';
 import 'individual_chat_screen.dart';
 import 'dashboard_screen.dart';
 import 'monetization_screen.dart';
+import '../widgets/verification_badge.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String? userId;
@@ -30,7 +34,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _loading = true;
   String? _currentUserId;
   bool get _isCurrentUser =>
-      widget.userId == null || (widget.userId != null && widget.userId == _currentUserId);
+      widget.userId == null ||
+      (widget.userId != null && widget.userId == _currentUserId);
+  bool get _canShowCreatorTools =>
+      _currentUserId != null &&
+      _targetUserId != null &&
+      _currentUserId == _targetUserId;
   bool _isFollowing = false;
   bool _followLoaded = false;
   String? _targetUserId;
@@ -60,18 +69,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (cached != null) {
           setState(() {
             _profile = cached.profile;
-      _posts
-        ..clear()
-        ..addAll(cached.posts);
-      _mediaByPostId
-        ..clear()
-        ..addAll(cached.mediaByPostId);
-      _postsCount = cached.postsCount;
-      _followersCount = cached.followersCount;
-      _followingCount = cached.followingCount;
-      _joinedAt = cached.joinedAt;
-      _loading = false;
-      _followLoaded = false;
+            _posts
+              ..clear()
+              ..addAll(cached.posts);
+            _mediaByPostId
+              ..clear()
+              ..addAll(cached.mediaByPostId);
+            _postsCount = cached.postsCount;
+            _followersCount = cached.followersCount;
+            _followingCount = cached.followingCount;
+            _joinedAt = cached.joinedAt;
+            _loading = false;
+            _followLoaded = false;
           });
           // Even when cached, refresh follow state so the button reflects
           // whether the current user already follows this profile.
@@ -80,14 +89,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         }
       }
       final prof = await AppwriteService.getProfileByUserId(id);
-      final userMeta = await AppwriteService.getUserMetaByUserId(id);
       _targetUserId = prof?.data['userId'] as String? ?? id;
       await _syncFollowState();
       // Load counts
       final followingIds = await AppwriteService.getFollowingUserIds(id);
       final followersCount = await AppwriteService.getFollowerCount(id);
       // Load posts for this user
-      final aw.RowList postsList = await AppwriteService.fetchPostsByUserIds([id], limit: 50);
+      final aw.RowList postsList =
+          await AppwriteService.fetchPostsByUserIds([id], limit: 50);
       final rows = postsList.rows;
 
       // Load repost events for this user (mirror behavior in profile feed)
@@ -101,47 +110,57 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final List<String> rawMedia = data['mediaUrls'] is List
             ? (data['mediaUrls'] as List).map((e) => e.toString()).toList()
             : <String>[];
-        final kind = (data['postType'] ?? data['type'] ?? data['category']) as String?;
+        final postType = data['postType'] as String?;
         final title = data['title'] as String?;
         final thumbnailUrl = data['thumbnailUrl'] as String?;
-        final kindLower = (kind ?? '').toLowerCase();
-        final bool isVideoKind = kindLower.contains('video') || kindLower.contains('reel');
+        final postTypeLower = (postType ?? '').toLowerCase();
+        final bool isVideoPost =
+            postTypeLower.contains('video') || postTypeLower.contains('reel');
 
         String? videoUrl;
         String? firstImage;
         List<String> mediaForUi;
 
-        if (isVideoKind && rawMedia.isNotEmpty) {
+        if (isVideoPost && rawMedia.isNotEmpty) {
           final first = rawMedia.first;
-          videoUrl = (first.startsWith('http://') || first.startsWith('https://'))
-              ? first
-              : await WasabiService.getSignedUrl(first);
+          videoUrl =
+              (first.startsWith('http://') || first.startsWith('https://'))
+                  ? first
+                  : await StorageService.getVideoDisplayUrl(first);
           firstImage = thumbnailUrl?.isNotEmpty == true
               ? (thumbnailUrl!.startsWith('http')
-                  ? thumbnailUrl
-                  : await WasabiService.getSignedUrl(thumbnailUrl))
-              : (rawMedia.length > 1 ? rawMedia[1] : null);
+                  ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                  : await StorageService.getImageDisplayUrl(thumbnailUrl))
+              : (rawMedia.length > 1
+                  ? await StorageService.getImageDisplayUrl(rawMedia[1])
+                  : null);
           mediaForUi = firstImage != null ? <String>[firstImage] : <String>[];
         } else {
           firstImage = thumbnailUrl?.isNotEmpty == true
               ? (thumbnailUrl!.startsWith('http')
-                  ? thumbnailUrl
-                  : await WasabiService.getSignedUrl(thumbnailUrl))
-              : (rawMedia.isNotEmpty ? rawMedia.first : null);
-          mediaForUi = rawMedia;
+                  ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                  : await StorageService.getImageDisplayUrl(thumbnailUrl))
+              : (rawMedia.isNotEmpty
+                  ? await StorageService.getImageDisplayUrl(rawMedia.first)
+                  : null);
+          mediaForUi = <String>[];
+          for (final media in rawMedia) {
+            mediaForUi.add(await StorageService.getImageDisplayUrl(media));
+          }
         }
 
         _mediaByPostId[d.$id] = mediaForUi;
         _posts.add(
           Post(
             id: d.$id,
-            username: data['username'] as String? ?? 'No Name',
+            username: (data['displayName'] as String?)?.trim() ?? '',
             userAvatar: data['userAvatar'] as String? ?? '',
             content: data['content'] as String? ?? '',
             textBgColor: data['textBgColor'] as int?,
             timestamp: DateTime.tryParse(d.$createdAt) ??
                 (data['createdAt'] != null
-                    ? DateTime.tryParse(data['createdAt'] as String? ?? '') ?? DateTime.now()
+                    ? DateTime.tryParse(data['createdAt'] as String? ?? '') ??
+                        DateTime.now()
                     : DateTime.now()),
             likes: data['likes'] as int? ?? 0,
             comments: data['comments'] as int? ?? 0,
@@ -150,7 +169,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             views: data['views'] as int? ?? 0,
             imageUrl: firstImage,
             videoUrl: videoUrl,
-            kind: kind,
+            postType: postType,
             title: title,
             thumbnailUrl: thumbnailUrl,
           ),
@@ -163,40 +182,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final postId = rData['postId'] as String?;
         if (postId == null) continue;
         try {
-          final original =
-              await AppwriteService.getRow(AppwriteService.postsCollectionId, postId);
+          final original = await AppwriteService.getRow(
+              AppwriteService.postsCollectionId, postId);
           final data = original.data;
           final List<String> rawMedia = data['mediaUrls'] is List
               ? (data['mediaUrls'] as List).map((e) => e.toString()).toList()
               : <String>[];
-          final kind = (data['postType'] ?? data['type'] ?? data['category']) as String?;
+          final postType = data['postType'] as String?;
           final title = data['title'] as String?;
           final thumbnailUrl = data['thumbnailUrl'] as String?;
-          final kindLower = (kind ?? '').toLowerCase();
-          final bool isVideoKind = kindLower.contains('video') || kindLower.contains('reel');
+          final postTypeLower = (postType ?? '').toLowerCase();
+          final bool isVideoPost =
+              postTypeLower.contains('video') || postTypeLower.contains('reel');
 
           String? videoUrl;
           String? firstImage;
           List<String> mediaForUi;
 
-          if (isVideoKind && rawMedia.isNotEmpty) {
+          if (isVideoPost && rawMedia.isNotEmpty) {
             final first = rawMedia.first;
-            videoUrl = (first.startsWith('http://') || first.startsWith('https://'))
-                ? first
-                : await WasabiService.getSignedUrl(first);
+            videoUrl =
+                (first.startsWith('http://') || first.startsWith('https://'))
+                    ? first
+                    : await StorageService.getVideoDisplayUrl(first);
             firstImage = thumbnailUrl?.isNotEmpty == true
                 ? (thumbnailUrl!.startsWith('http')
-                    ? thumbnailUrl
-                    : await WasabiService.getSignedUrl(thumbnailUrl))
-                : (rawMedia.length > 1 ? rawMedia[1] : null);
+                    ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                    : await StorageService.getImageDisplayUrl(thumbnailUrl))
+                : (rawMedia.length > 1
+                    ? await StorageService.getImageDisplayUrl(rawMedia[1])
+                    : null);
             mediaForUi = firstImage != null ? <String>[firstImage] : <String>[];
           } else {
             firstImage = thumbnailUrl?.isNotEmpty == true
                 ? (thumbnailUrl!.startsWith('http')
-                    ? thumbnailUrl
-                    : await WasabiService.getSignedUrl(thumbnailUrl))
-                : (rawMedia.isNotEmpty ? rawMedia.first : null);
-            mediaForUi = rawMedia;
+                    ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                    : await StorageService.getImageDisplayUrl(thumbnailUrl))
+                : (rawMedia.isNotEmpty
+                    ? await StorageService.getImageDisplayUrl(rawMedia.first)
+                    : null);
+            mediaForUi = <String>[];
+            for (final media in rawMedia) {
+              mediaForUi.add(await StorageService.getImageDisplayUrl(media));
+            }
           }
 
           _mediaByPostId[postId] = mediaForUi;
@@ -204,12 +232,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _posts.add(
             Post(
               id: postId,
-              username: data['username'] as String? ?? 'No Name',
+              username: (data['displayName'] as String?)?.trim() ?? '',
               userAvatar: data['userAvatar'] as String? ?? '',
               content: data['content'] as String? ?? '',
               textBgColor: data['textBgColor'] as int?,
               timestamp: rData['createdAt'] != null
-                  ? DateTime.tryParse(rData['createdAt'] as String? ?? '') ?? DateTime.now()
+                  ? DateTime.tryParse(rData['createdAt'] as String? ?? '') ??
+                      DateTime.now()
                   : DateTime.now(),
               likes: data['likes'] as int? ?? 0,
               comments: data['comments'] as int? ?? 0,
@@ -218,12 +247,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
               views: data['views'] as int? ?? 0,
               imageUrl: firstImage,
               videoUrl: videoUrl,
-              kind: kind,
+              postType: postType,
               title: title,
               thumbnailUrl: thumbnailUrl,
               sourcePostId: postId,
               sourceUserId: _targetUserId,
-              sourceUsername: _profile?['displayName'] ?? _profile?['username'] ?? '',
+              sourceUsername:
+                  (_profile?['displayName'] as String?)?.trim() ?? '',
             ),
           );
         } catch (_) {
@@ -235,23 +265,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (prof != null) {
         profileData.addAll(prof.data);
       }
-      if (userMeta != null) {
-        final u = userMeta.data;
-        profileData['username'] ??= u['username'];
-        profileData['email'] ??= u['email'];
-      }
       if (profileData.isEmpty && me != null) {
         profileData['displayName'] = me.name;
         profileData['username'] = me.name;
       }
 
-      // Resolve Bunny/Wasabi keys for avatar/cover to signed URLs for display.
+      // Resolve Bunny/Storage keys for avatar/cover to signed URLs for display.
       final rawAvatar = profileData['avatarUrl'] as String?;
       if (rawAvatar != null &&
           rawAvatar.isNotEmpty &&
           !rawAvatar.startsWith('http')) {
         try {
-          final signed = await WasabiService.getSignedUrl(rawAvatar);
+          final signed = await StorageService.getSignedUrl(rawAvatar);
           profileData['avatarUrl'] = signed;
         } catch (_) {}
       }
@@ -260,7 +285,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           rawCover.isNotEmpty &&
           !rawCover.startsWith('http')) {
         try {
-          final signed = await WasabiService.getSignedUrl(rawCover);
+          final signed = await StorageService.getSignedUrl(rawCover);
           profileData['coverUrl'] = signed;
         } catch (_) {}
       }
@@ -329,14 +354,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
-    final displayName = _profile?['displayName'] ?? _profile?['username'] ?? 'User Profile';
+    final displayName = (_profile?['displayName'] as String?)?.trim() ?? '';
     final username = _profile?['username'] ?? 'user';
     final avatar = _profile?['avatarUrl'] as String?;
     final bio = _profile?['bio'] as String?;
     final category = _profile?['category'] as String?;
     final coverUrl = _profile?['coverUrl'] as String?;
 
-    final postsOnly = _posts.where((p) => !_isVideoPost(p) && !_isNewsPost(p)).toList();
+    final postsOnly =
+        _posts.where((p) => !_isVideoPost(p) && !_isNewsPost(p)).toList();
     final videosOnly = _posts.where(_isVideoPost).toList();
     final newsOnly = _posts.where(_isNewsPost).toList();
 
@@ -381,8 +407,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     _buildActionButtons(theme),
                     const SizedBox(height: 12),
-                    _buildDashboardAndMonetization(theme),
-                    const SizedBox(height: 8),
+                    if (_canShowCreatorTools) ...[
+                      _buildDashboardAndMonetization(theme),
+                      const SizedBox(height: 8),
+                    ],
                   ],
                 ),
               ),
@@ -445,13 +473,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Action failed: $e')),
+        const SnackBar(content: Text('Action failed. Please try again.')),
       );
     }
   }
 
   Future<void> _openChatWithUser() async {
-    final targetId = _targetUserId ?? _profile?['userId'] as String? ?? widget.userId;
+    final targetId =
+        _targetUserId ?? _profile?['userId'] as String? ?? widget.userId;
     if (targetId == null || targetId.isEmpty) return;
     final me = await AppwriteService.getCurrentUser();
     if (me == null) return;
@@ -459,9 +488,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final chatId = await AppwriteService.getChatId(me.$id, targetId);
       final targetProfile = await AppwriteService.getProfileByUserId(targetId);
       final data = targetProfile?.data ?? <String, dynamic>{};
-      final displayName = (data['displayName'] as String?)?.trim() ??
-          (data['username'] as String?)?.trim() ??
-          'User';
+      final displayName = (data['displayName'] as String?)?.trim() ?? '';
       final avatar = (data['avatarUrl'] as String?) ?? '';
       final chat = Chat(
         id: chatId,
@@ -480,15 +507,108 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open chat: $e')),
+        const SnackBar(
+          content: Text('Could not open chat right now. Please try again.'),
+        ),
       );
     }
   }
 
   void _shareProfile() {
-    // Placeholder: you can wire this to share profile URL later.
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Share profile coming soon')),
+    final username = (_profile?['username'] as String?)?.trim();
+    final displayName = (_profile?['displayName'] as String?)?.trim() ?? '';
+    if (username == null || username.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile link is unavailable')),
+      );
+      return;
+    }
+    ShareUtils.shareProfile(username: username, displayName: displayName);
+  }
+
+  void _openProfileMenu() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ProfileMenuScreen()),
+    );
+  }
+
+  void _showProfileActionsMenu() {
+    final targetUserId = _targetUserId;
+    if (targetUserId == null || targetUserId.isEmpty) return;
+    if (_currentUserId != null && targetUserId == _currentUserId) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (bcontext) {
+        return Wrap(
+          children: [
+            TvFocusableAction(
+              onPressed: () {
+                Navigator.of(bcontext).pop();
+                _showReportProfileConfirmation(targetUserId);
+              },
+              child: ListTile(
+                leading: const Icon(Icons.flag_outlined, color: Colors.red),
+                title: const Text(
+                  'Report Profile',
+                  style: TextStyle(color: Colors.red),
+                ),
+                onTap: () {
+                  Navigator.of(bcontext).pop();
+                  _showReportProfileConfirmation(targetUserId);
+                },
+              ),
+            ),
+            TvFocusableAction(
+              onPressed: () => Navigator.of(bcontext).pop(),
+              child: ListTile(
+                leading: const Icon(Icons.close, color: Colors.grey),
+                title: const Text('Cancel'),
+                onTap: () => Navigator.of(bcontext).pop(),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showReportProfileConfirmation(String targetUserId) {
+    showDialog(
+      context: context,
+      builder: (dcontext) => AlertDialog(
+        title: const Text('Report Profile'),
+        content: const Text('Do you want to report this profile?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dcontext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final navigator = Navigator.of(dcontext);
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                await AppwriteService.reportProfile(
+                  targetUserId,
+                  'Inappropriate profile content',
+                );
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Profile reported.')),
+                );
+              } catch (_) {
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Failed to report profile.')),
+                );
+              }
+            },
+            child: const Text('Report', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -522,7 +642,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return RefreshIndicator(
       onRefresh: () => _load(force: true),
       child: ListView.builder(
-        padding: EdgeInsets.zero,
+        padding: const EdgeInsets.only(bottom: 72),
         itemCount: posts.length + 1,
         itemBuilder: (context, index) {
           if (index == 0) return const PendingUploadBanner();
@@ -548,15 +668,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) {
-                    if (isReel && isVideo && post.videoUrl != null && post.videoUrl!.isNotEmpty) {
-                      return ReelPlayer(
+                    if (isReel &&
+                        isVideo &&
+                        post.videoUrl != null &&
+                        post.videoUrl!.isNotEmpty) {
+                      return ReelDetailScreen(
                         post: post,
                         isGuest: false,
                         onGuestAction: null,
                         authorId: _targetUserId,
                       );
                     }
-                    if (isVideo && post.videoUrl != null && post.videoUrl!.isNotEmpty) {
+                    if (isVideo &&
+                        post.videoUrl != null &&
+                        post.videoUrl!.isNotEmpty) {
                       return VideoDetailScreen(
                         post: post,
                         mediaUrls: _mediaByPostId[post.id],
@@ -593,65 +718,106 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }) {
     final coverHeight = 190.0;
     final joinedLabel = _joinedAt != null ? _formatJoined(_joinedAt!) : null;
+    const coverFallbackStart = Color(0xFF2563EB);
+    const coverFallbackEnd = Color(0xFF7C3AED);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          height: coverHeight,
+          height: coverHeight + 56,
           width: double.infinity,
           child: Stack(
-            fit: StackFit.expand,
             children: [
-              if (coverUrl != null && coverUrl.isNotEmpty)
-                Image.network(
-                  coverUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => Container(
-                    color: theme.colorScheme.primary,
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                height: coverHeight,
+                child: ClipRect(
+                  child: coverUrl != null && coverUrl.isNotEmpty
+                      ? Image.network(
+                          coverUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) =>
+                              Container(
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  coverFallbackStart,
+                                  coverFallbackEnd,
+                                ],
+                              ),
+                            ),
+                          ),
+                        )
+                      : Container(
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                coverFallbackStart,
+                                coverFallbackEnd,
+                              ],
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              Positioned(
+                left: 16,
+                bottom: 0,
+                child: Container(
+                  width: 96,
+                  height: 96,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black, width: 4),
+                    color: const Color(0xFF1F2937),
                   ),
-                )
-              else
-                Container(color: theme.colorScheme.primary),
-              Positioned.fill(
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: CircleAvatar(
-                      radius: 46,
-                      backgroundColor: theme.scaffoldBackgroundColor,
-                      child: CircleAvatar(
-                        radius: 42,
-                        backgroundImage:
-                            (avatar != null && avatar.isNotEmpty) ? NetworkImage(avatar) : null,
-                        backgroundColor: Colors.grey[300],
-                        child: (avatar == null || avatar.isEmpty)
-                            ? Icon(Icons.person, color: Colors.grey[600], size: 36)
-                            : null,
-                      ),
-                    ),
+                  child: ClipOval(
+                    child: avatar != null && avatar.isNotEmpty
+                        ? Image.network(
+                            avatar,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) =>
+                                _buildAvatarFallback(displayName),
+                          )
+                        : _buildAvatarFallback(displayName),
                   ),
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 12),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                displayName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: theme.colorScheme.onSurface,
-                ),
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                children: [
+                  Text(
+                    displayName,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  if (_profile?['isVerified'] == true ||
+                      _profile?['verified'] == true ||
+                      _profile?['isAdmin'] == true)
+                    VerificationBadge(
+                      size: 20,
+                      isPremium: _profile?['isAdmin'] == true,
+                    ),
+                ],
               ),
               const SizedBox(height: 4),
               Text(
@@ -717,6 +883,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Widget _buildAvatarFallback(String displayName) {
+    final initial = displayName.trim().isNotEmpty
+        ? displayName.trim().substring(0, 1).toUpperCase()
+        : 'U';
+    return Container(
+      color: const Color(0xFF1F2937),
+      alignment: Alignment.center,
+      child: Text(
+        initial,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 28,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+
   Widget _buildActionButtons(ThemeData theme) {
     Widget? leadingButton;
     if (_isCurrentUser) {
@@ -744,9 +928,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       leadingButton = OutlinedButton(
         onPressed: _toggleFollow,
         style: OutlinedButton.styleFrom(
-          backgroundColor: _isFollowing ? theme.colorScheme.surface : const Color(0xFF1DA1F2),
-          foregroundColor: _isFollowing ? theme.colorScheme.onSurface : Colors.white,
-          side: _isFollowing ? BorderSide(color: theme.dividerColor) : BorderSide.none,
+          backgroundColor: _isFollowing
+              ? theme.colorScheme.surface
+              : const Color(0xFF1DA1F2),
+          foregroundColor:
+              _isFollowing ? theme.colorScheme.onSurface : Colors.white,
+          side: _isFollowing
+              ? BorderSide(color: theme.dividerColor)
+              : BorderSide.none,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(999),
           ),
@@ -761,26 +950,56 @@ class _ProfileScreenState extends State<ProfileScreen> {
         children: [
           if (leadingButton != null) Expanded(child: leadingButton),
           if (leadingButton != null) const SizedBox(width: 8),
-          Expanded(
-            child: OutlinedButton(
-              onPressed: _isCurrentUser ? _shareProfile : _openChatWithUser,
-              style: OutlinedButton.styleFrom(
-                backgroundColor: theme.colorScheme.surface,
-                foregroundColor: theme.colorScheme.onSurface,
-                side: BorderSide(color: theme.dividerColor),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(999),
-                ),
+          if (_isCurrentUser) ...[
+            IconButton(
+              tooltip: 'Share profile',
+              onPressed: _shareProfile,
+              icon: Icon(
+                Icons.share_outlined,
+                color: theme.colorScheme.onSurface,
               ),
-              child: Text(_isCurrentUser ? 'Share profile' : 'Message'),
             ),
-          ),
+            IconButton(
+              tooltip: 'Menu',
+              onPressed: _openProfileMenu,
+              icon: Icon(
+                Icons.more_horiz,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ] else ...[
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _openChatWithUser,
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: theme.colorScheme.surface,
+                  foregroundColor: theme.colorScheme.onSurface,
+                  side: BorderSide(color: theme.dividerColor),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: const Text('Message'),
+              ),
+            ),
+            IconButton(
+              tooltip: 'More',
+              onPressed: _showProfileActionsMenu,
+              icon: Icon(
+                Icons.more_horiz,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildDashboardAndMonetization(ThemeData theme) {
+    if (!_canShowCreatorTools) {
+      return const SizedBox.shrink();
+    }
     final isDark = theme.brightness == Brightness.dark;
     final cardColor = theme.colorScheme.surface;
     final borderColor =
@@ -817,7 +1036,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     subtitle: 'Insights & performance',
                     onTap: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+                        MaterialPageRoute(
+                            builder: (_) => const DashboardScreen()),
                       );
                     },
                   ),
@@ -831,7 +1051,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     subtitle: 'Earnings & eligibility',
                     onTap: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const MonetizationScreen()),
+                        MaterialPageRoute(
+                            builder: (_) => const MonetizationScreen()),
                       );
                     },
                   ),
@@ -852,9 +1073,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required VoidCallback onTap,
   }) {
     final isDark = theme.brightness == Brightness.dark;
-    return InkWell(
+    return TvFocusableAction(
       borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
+      onPressed: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
@@ -913,10 +1134,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   bool _isVideoPost(Post post) {
-    final kindLower = post.kind?.toLowerCase() ?? '';
-    if (kindLower.contains('video') ||
-        kindLower.contains('reel') ||
-        kindLower.contains('short')) {
+    final postTypeLower = post.postType?.toLowerCase() ?? '';
+    if (postTypeLower.contains('video') ||
+        postTypeLower.contains('reel') ||
+        postTypeLower.contains('short')) {
       return true;
     }
     if (post.videoUrl != null && post.videoUrl!.isNotEmpty) {
@@ -927,19 +1148,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   bool _isReelPost(Post post) {
-    final kind = post.kind?.toLowerCase();
-    if (kind == null) return false;
-    return kind.contains('reel') || kind.contains('short');
+    final postType = post.postType?.toLowerCase();
+    if (postType == null) return false;
+    return postType.contains('reel') || postType.contains('short');
   }
 
   bool _isNewsPost(Post post) {
-    final kind = post.kind?.toLowerCase();
-    if (kind == null) return false;
-    return kind.contains('news') || kind.contains('blog');
+    final postType = post.postType?.toLowerCase();
+    if (postType == null) return false;
+    return postType.contains('news') || postType.contains('blog');
   }
 
   bool _isVideoUrl(String url) {
-    final lower = url.toLowerCase();
+    final uri = Uri.tryParse(url);
+    final lower = uri?.queryParameters['filename']?.toLowerCase() ??
+        uri?.queryParameters['path']?.toLowerCase() ??
+        url.toLowerCase();
     return lower.endsWith('.mp4') ||
         lower.endsWith('.mov') ||
         lower.endsWith('.mkv') ||
@@ -982,7 +1206,8 @@ class _ProfileTabBarDelegate extends SliverPersistentHeaderDelegate {
   double get maxExtent => tabBar.preferredSize.height;
 
   @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+  Widget build(
+      BuildContext context, double shrinkOffset, bool overlapsContent) {
     return Container(
       color: theme.colorScheme.surface,
       child: tabBar,

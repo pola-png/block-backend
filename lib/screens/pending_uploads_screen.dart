@@ -9,34 +9,53 @@ class PendingUploadsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Pending uploads'),
-      ),
-      body: ValueListenableBuilder<List<PendingUpload>>(
-        valueListenable: PendingUploadService.uploads,
-        builder: (context, uploads, _) {
-          if (uploads.isEmpty) {
-            return const Center(
-              child: Text('No pending uploads'),
-            );
-          }
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: uploads.length,
-            separatorBuilder: (context, _) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final upload = uploads[index];
-              return _buildCard(theme, upload);
-            },
-          );
-        },
-      ),
+    return ValueListenableBuilder<List<PendingUpload>>(
+      valueListenable: PendingUploadService.uploads,
+      builder: (context, uploads, _) {
+        final theme = Theme.of(context);
+        final completedCount = uploads.where((upload) => upload.completed).length;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Pending uploads'),
+            actions: [
+              if (completedCount > 0)
+                IconButton(
+                  tooltip: 'Clear completed uploads',
+                  onPressed: () async {
+                    await PendingUploadService.clearCompletedUploads();
+                  },
+                  icon: const Icon(Icons.delete_outline_rounded),
+                ),
+            ],
+          ),
+          body: uploads.isEmpty
+              ? const Center(
+                  child: Text('No pending uploads'),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: uploads.length,
+                  separatorBuilder: (context, _) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final upload = uploads[index];
+                    final isHighlighted = upload.id == initialUploadId;
+                    return _buildCard(
+                      theme,
+                      upload,
+                      highlighted: isHighlighted,
+                    );
+                  },
+                ),
+        );
+      },
     );
   }
 
-  Widget _buildCard(ThemeData theme, PendingUpload upload) {
+  Widget _buildCard(
+    ThemeData theme,
+    PendingUpload upload, {
+    required bool highlighted,
+  }) {
     final statusColor = upload.failed
         ? Colors.red
         : upload.completed
@@ -45,9 +64,14 @@ class PendingUploadsScreen extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
+        color: highlighted
+            ? theme.colorScheme.primaryContainer.withOpacity(0.35)
+            : theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: theme.dividerColor),
+        border: Border.all(
+          color: highlighted ? statusColor.withOpacity(0.55) : theme.dividerColor,
+          width: highlighted ? 1.4 : 1,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -61,6 +85,18 @@ class PendingUploadsScreen extends StatelessWidget {
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ),
+              if (highlighted)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Text(
+                    'Opened from banner',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: statusColor,
+                    ),
+                  ),
+                ),
               Text(
                 upload.completed
                     ? 'Done'

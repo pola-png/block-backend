@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="facebook_app_id">2209895229830644</string>
+    <!-- Replace this with your actual Client Token from Facebook Developers Dashboard under Settings > Advanced -->
+    <string name="facebook_client_token">00000000000000000000000000000000</string>
+</resources>

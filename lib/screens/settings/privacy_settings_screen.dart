@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'blocked_accounts_screen.dart';
 import 'change_password_screen.dart';
+import '../../widgets/tv_focusable_action.dart';
 
 class PrivacySettingsScreen extends StatefulWidget {
   const PrivacySettingsScreen({super.key});
@@ -16,59 +17,40 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: Colors.white,
-      body: Column(
-        children: [
-          _buildHeader(),
-          Expanded(
-            child: _buildSettings(),
-          ),
-        ],
+      backgroundColor: theme.scaffoldBackgroundColor,
+      appBar: AppBar(
+        title: const Text('Privacy & Security'),
+        centerTitle: true,
+        backgroundColor: theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface,
+        foregroundColor: theme.appBarTheme.foregroundColor ?? theme.colorScheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
       ),
+      body: _buildSettings(context),
     );
   }
 
-  Widget _buildHeader() {
-    return Container(
-      height: 56,
-      padding: const EdgeInsets.fromLTRB(16, 44, 16, 0),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Color(0xFFE5E7EB), width: 1)),
-      ),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: () => Navigator.pop(context),
-            child: const Icon(LucideIcons.arrowLeft, size: 20),
-          ),
-          const SizedBox(width: 16),
-          const Text(
-            'Privacy & Security',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSettings() {
+  Widget _buildSettings(BuildContext context) {
     return ListView(
       children: [
         _buildSwitchOption(
+          context,
           'Private Account',
           'Only approved followers can see your posts',
           _privateAccount,
           (value) => setState(() => _privateAccount = value),
         ),
         _buildSwitchOption(
+          context,
           'Show Activity Status',
           'Let others see when you\'re online',
           _showActivityStatus,
           (value) => setState(() => _showActivityStatus = value),
         ),
         _buildNavigationOption(
+          context,
           'Blocked Accounts',
           'Manage users you\'ve blocked',
           LucideIcons.ban,
@@ -77,6 +59,7 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
           },
         ),
         _buildNavigationOption(
+          context,
           'Change Password',
           'Update your account password',
           LucideIcons.lock,
@@ -88,11 +71,18 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
     );
   }
 
-  Widget _buildSwitchOption(String title, String description, bool value, Function(bool) onChanged) {
+  Widget _buildSwitchOption(
+    BuildContext context,
+    String title,
+    String description,
+    bool value,
+    Function(bool) onChanged,
+  ) {
+    final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: Color(0xFFE5E7EB), width: 1)),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: theme.dividerColor.withOpacity(0.6), width: 1)),
       ),
       child: Row(
         children: [
@@ -102,18 +92,18 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w500,
-                    color: Colors.black,
+                    color: theme.colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   description,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
-                    color: Color(0xFF6B7280),
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],
@@ -122,27 +112,34 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
           Switch(
             value: value,
             onChanged: onChanged,
-            activeTrackColor: const Color(0xFF29ABE2),
+            activeColor: theme.colorScheme.primary,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildNavigationOption(String title, String description, IconData icon, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
+  Widget _buildNavigationOption(
+    BuildContext context,
+    String title,
+    String description,
+    IconData icon,
+    VoidCallback onTap,
+  ) {
+    final theme = Theme.of(context);
+    return TvFocusableAction(
+      onPressed: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: const BoxDecoration(
-          border: Border(bottom: BorderSide(color: Color(0xFFE5E7EB), width: 1)),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: theme.dividerColor.withOpacity(0.6), width: 1)),
         ),
         child: Row(
           children: [
             Icon(
               icon,
               size: 24,
-              color: const Color(0xFF6B7280),
+              color: theme.colorScheme.onSurfaceVariant,
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -151,18 +148,18 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w500,
-                      color: Colors.black,
+                      color: theme.colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     description,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
-                      color: Color(0xFF6B7280),
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],

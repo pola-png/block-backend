@@ -1,6 +1,9 @@
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+import 'package:image_picker/image_picker.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/home_screen.dart';
 import '../screens/chat_screen.dart';
 import '../screens/notifications_screen.dart';
@@ -8,9 +11,12 @@ import '../screens/profile_screen.dart';
 import '../models/upload_type.dart';
 import '../screens/upload_screen.dart';
 import '../services/appwrite_service.dart';
-import '../screens/auth/sign_in_screen.dart';
 import '../screens/search_screen.dart';
 import '../screens/banned_screen.dart';
+import 'dart:async';
+import '../services/push_notification_service.dart';
+import '../models/chat.dart';
+import '../services/chat_message_cache.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -20,6 +26,8 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  static const String _welcomeIntroSeenKey = 'has_seen_welcome_intro_v2';
+
   int _currentIndex = 0;
   bool _isAuthed = false;
   int _unreadChats = 0;
@@ -28,6 +36,8 @@ class _MainScreenState extends State<MainScreen> {
   RealtimeSubscription? _banSub;
   String? _avatarUrl;
   bool _banHandled = false;
+  bool _checkedWelcomeIntro = false;
+  final ImagePicker _picker = ImagePicker();
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -44,6 +54,38 @@ class _MainScreenState extends State<MainScreen> {
     _loadBadges();
     _subscribeBadges();
     _subscribeBanWatcher();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeShowWelcomeIntro();
+      _initializeNotifications();
+    });
+  }
+
+  void _initializeNotifications() {
+    // Initialize push notifications in the background after the home screen has fully rendered.
+    unawaited(PushNotificationService.initialize());
+  }
+
+  Future<void> _maybeShowWelcomeIntro() async {
+    if (_checkedWelcomeIntro || !mounted) return;
+    _checkedWelcomeIntro = true;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final hasSeenIntro = prefs.getBool(_welcomeIntroSeenKey) ?? false;
+      if (hasSeenIntro || !mounted) {
+        return;
+      }
+
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const _WelcomeIntroDialog(),
+      );
+
+      await prefs.setBool(_welcomeIntroSeenKey, true);
+    } catch (_) {
+      // Ignore intro persistence errors and let the app continue normally.
+    }
   }
 
   Future<void> _checkAuth() async {
@@ -74,6 +116,7 @@ class _MainScreenState extends State<MainScreen> {
       builder: (context, constraints) {
         final isDesktop = constraints.maxWidth > 1100;
         return Scaffold(
+          extendBody: true,
           appBar: isDesktop
               ? AppBar(
                   toolbarHeight: 64,
@@ -88,8 +131,9 @@ class _MainScreenState extends State<MainScreen> {
                         child: Text(
                           'XapZap',
                           style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 22,
+                            letterSpacing: -0.5,
                           ),
                         ),
                       ),
@@ -139,8 +183,8 @@ class _MainScreenState extends State<MainScreen> {
                         backgroundColor: Colors.grey.shade300,
                         backgroundImage:
                             (_avatarUrl != null && _avatarUrl!.isNotEmpty)
-                            ? NetworkImage(_avatarUrl!)
-                            : null,
+                                ? NetworkImage(_avatarUrl!)
+                                : null,
                         child: (_avatarUrl == null || _avatarUrl!.isEmpty)
                             ? const Icon(
                                 LucideIcons.user,
@@ -159,33 +203,60 @@ class _MainScreenState extends State<MainScreen> {
           body: IndexedStack(index: _currentIndex, children: _screens),
           bottomNavigationBar: isDesktop
               ? null
-              : Container(
-                  height: 64,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).scaffoldBackgroundColor,
-                    border: const Border(
-                      top: BorderSide(color: Color(0xFFE5E7EB), width: 1),
+              : ClipRect(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface.withOpacity(0.85),
+                        border: Border(
+                          top: BorderSide(
+                            color: Theme.of(context).brightness == Brightness.light
+                                ? Colors.black.withOpacity(0.08)
+                                : Colors.white.withOpacity(0.12),
+                            width: 0.8,
+                          ),
+                        ),
+                      ),
+                      child: SafeArea(
+                        top: false,
+                        child: SizedBox(
+                          height: 68,
+                          child: Stack(
+                            children: [
+                              _buildAnimatedIndicator(constraints.maxWidth),
+                              Row(
+                                children: [
+                                  Expanded(child: Center(child: _buildNavItem(0, LucideIcons.home, null))),
+                                  Expanded(
+                                    child: Center(
+                                      child: _buildNavItem(
+                                        1,
+                                        LucideIcons.messageCircle,
+                                        _unreadChats > 0 ? '$_unreadChats' : null,
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(child: Center(child: _buildNavItem(2, LucideIcons.plusSquare, null))),
+                                  Expanded(
+                                    child: Center(
+                                      child: _buildNavItem(
+                                        3,
+                                        LucideIcons.bell,
+                                        _unreadNotifications > 0
+                                            ? '$_unreadNotifications'
+                                            : null,
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(child: Center(child: _buildNavItem(4, LucideIcons.user, null))),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildNavItem(0, LucideIcons.home, null),
-                      _buildNavItem(
-                        1,
-                        LucideIcons.messageCircle,
-                        _unreadChats > 0 ? '$_unreadChats' : null,
-                      ),
-                      _buildNavItem(2, LucideIcons.plusSquare, null),
-                      _buildNavItem(
-                        3,
-                        LucideIcons.bell,
-                        _unreadNotifications > 0
-                            ? '$_unreadNotifications'
-                            : null,
-                      ),
-                      _buildNavItem(4, LucideIcons.user, null),
-                    ],
                   ),
                 ),
         );
@@ -193,55 +264,133 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  Widget _buildAnimatedIndicator(double barWidth) {
+    final itemWidth = barWidth / 5;
+    final double leftOffset;
+    if (_currentIndex == 0) {
+      leftOffset = 0 * itemWidth;
+    } else if (_currentIndex == 1) {
+      leftOffset = 1 * itemWidth;
+    } else if (_currentIndex == 3) {
+      leftOffset = 3 * itemWidth;
+    } else if (_currentIndex == 4) {
+      leftOffset = 4 * itemWidth;
+    } else {
+      leftOffset = 0.0;
+    }
+
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.fastOutSlowIn,
+      left: leftOffset + (itemWidth - 54) / 2,
+      top: (68 - 40) / 2,
+      child: Container(
+        width: 54,
+        height: 40,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.primary.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(16),
+        ),
+      ),
+    );
+  }
+
   Widget _buildNavItem(int index, IconData icon, String? badge) {
     final isActive = _currentIndex == index;
-    return GestureDetector(
-      onTap: () async {
-        final requiresAuth = index != 0;
-        if (requiresAuth && !_isAuthed) {
-          final proceed = await _redirectToSignIn();
-          if (!proceed) return;
-        }
-        if (index == 2) {
+
+    if (index == 2) {
+      return GestureDetector(
+        onTap: () async {
           if (!_isAuthed) return;
           _showCreatePicker();
-        } else {
-          setState(() => _currentIndex = index);
+        },
+        child: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              colors: [Color(0xFF4F46E5), Color(0xFF8B5CF6)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF4F46E5).withOpacity(0.35),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
+              ),
+            ],
+            border: Border.all(color: Colors.white24, width: 1.5),
+          ),
+          child: const Icon(
+            LucideIcons.plus,
+            color: Colors.white,
+            size: 24,
+          ),
+        ),
+      );
+    }
+
+    final activeColor = Theme.of(context).colorScheme.primary;
+    final inactiveColor = Theme.of(context).brightness == Brightness.light
+        ? const Color(0xFF64748B)
+        : const Color(0xFF94A3B8);
+
+    return GestureDetector(
+      onTap: () async {
+        if (!_isAuthed && index != 0) {
+          return;
         }
+        setState(() => _currentIndex = index);
       },
       child: Container(
-        padding: const EdgeInsets.all(8),
-        child: Stack(
-          children: [
-            Icon(
-              icon,
-              size: 28,
-              color: isActive ? const Color(0xFF29ABE2) : Colors.grey[600],
-            ),
-            if (badge != null)
-              Positioned(
-                right: 0,
-                top: 0,
-                child: Container(
-                  width: 16,
-                  height: 16,
-                  decoration: const BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Center(
-                    child: Text(
-                      badge,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
+        color: Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: AnimatedScale(
+          scale: isActive ? 1.15 : 1.0,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutBack,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(
+                icon,
+                size: 26,
+                color: isActive ? activeColor : inactiveColor,
+              ),
+              if (badge != null)
+                Positioned(
+                  right: -6,
+                  top: -6,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    constraints: const BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.surface,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        badge,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -249,6 +398,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget _buildNavAction(int index, IconData icon, String? badge) {
     final isActive = _currentIndex == index;
+    final activeColor = Theme.of(context).colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Stack(
@@ -256,12 +406,10 @@ class _MainScreenState extends State<MainScreen> {
         children: [
           IconButton(
             iconSize: 26,
-            icon: Icon(icon, color: isActive ? const Color(0xFF29ABE2) : null),
+            icon: Icon(icon, color: isActive ? activeColor : null),
             onPressed: () async {
-              final requiresAuth = index != 0;
-              if (requiresAuth && !_isAuthed) {
-                final proceed = await _redirectToSignIn();
-                if (!proceed) return;
+              if (!_isAuthed && index != 0) {
+                return;
               }
               if (index == 2) {
                 if (!_isAuthed) return;
@@ -276,11 +424,18 @@ class _MainScreenState extends State<MainScreen> {
               right: 4,
               top: 6,
               child: Container(
-                width: 16,
-                height: 16,
-                decoration: const BoxDecoration(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                constraints: const BoxConstraints(
+                  minWidth: 16,
+                  minHeight: 16,
+                ),
+                decoration: BoxDecoration(
                   color: Colors.red,
-                  shape: BoxShape.circle,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.surface,
+                    width: 1.5,
+                  ),
                 ),
                 child: Center(
                   child: Text(
@@ -299,16 +454,6 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  Future<bool> _redirectToSignIn() async {
-    if (!mounted) return false;
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const SignInScreen()));
-    if (!mounted) return false;
-    await _checkAuth();
-    return _isAuthed;
-  }
-
   void _showCreatePicker() {
     showModalBottomSheet<UploadType>(
       context: context,
@@ -323,27 +468,73 @@ class _MainScreenState extends State<MainScreen> {
               const SizedBox(height: 12),
               const Text(
                 'Create',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.3,
+                ),
               ),
               const SizedBox(height: 8),
               ListTile(
                 leading: const Icon(LucideIcons.image),
-                title: const Text('Image / Text'),
+                title: const Text(
+                  'Image / Text',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 onTap: () => Navigator.of(ctx).pop(UploadType.standard),
               ),
               ListTile(
                 leading: const Icon(LucideIcons.video),
-                title: const Text('Video'),
+                title: const Text(
+                  'Video',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 onTap: () => Navigator.of(ctx).pop(UploadType.video),
               ),
               ListTile(
                 leading: const Icon(LucideIcons.playCircle),
-                title: const Text('Reel'),
+                title: const Text(
+                  'Reel',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 onTap: () => Navigator.of(ctx).pop(UploadType.reel),
               ),
               ListTile(
+                leading: const Icon(LucideIcons.clapperboard),
+                title: const Text(
+                  'Episode',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: const Text(
+                  'Upload a reel episode or video episode',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey,
+                  ),
+                ),
+                onTap: () => Navigator.of(ctx).pop(UploadType.episode),
+              ),
+              ListTile(
                 leading: const Icon(LucideIcons.newspaper),
-                title: const Text('News / Blog'),
+                title: const Text(
+                  'News / Blog',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 onTap: () => Navigator.of(ctx).pop(UploadType.news),
               ),
               const SizedBox(height: 8),
@@ -353,45 +544,62 @@ class _MainScreenState extends State<MainScreen> {
       },
     ).then((type) {
       if (type == null) return;
-      Navigator.of(
-        context,
-      ).push(MaterialPageRoute(builder: (_) => UploadScreen(type: type)));
+      if (!mounted) return;
+      if (type == UploadType.video || type == UploadType.reel) {
+        _openVideoUpload(type);
+        return;
+      }
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => UploadScreen(type: type)),
+      );
     });
+  }
+
+  Future<void> _openVideoUpload(UploadType type) async {
+    final video = await _picker.pickVideo(source: ImageSource.gallery);
+    if (!mounted || video == null) return;
+    final navigator = Navigator.of(context);
+    navigator.push(
+      MaterialPageRoute(
+        builder: (_) => UploadScreen(
+          type: type,
+          initialVideo: video,
+        ),
+      ),
+    );
   }
 
   Future<void> _loadBadges() async {
     final user = await AppwriteService.getCurrentUser();
     if (user == null) return;
-    // Unread chats: count messages in chats not sent by me and not marked read.
     try {
       final chats = await AppwriteService.fetchChatsForUser(user.$id);
       int unreadChatCount = 0;
       for (final chatRow in chats.rows) {
-        final rawMemberIds = (chatRow.data['memberIds'] as String?) ?? '';
-        final memberIds = rawMemberIds
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
-        final partnerId = memberIds.firstWhere(
-          (id) => id != user.$id,
-          orElse: () => '',
-        );
-        if (partnerId.isEmpty) continue;
-        final msgs = await AppwriteService.fetchMessagesForChat(
-          chatRow.$id,
-          limit: 30,
-        );
-        for (final m in msgs.rows) {
-          final data = m.data;
-          final senderId = (data['senderId'] as String?) ?? '';
-          if (senderId == user.$id) continue;
-          final rawReadBy = (data['readBy'] as String?) ?? '';
-          final readBy = rawReadBy
-              .split(',')
-              .map((e) => e.trim())
-              .where((e) => e.isNotEmpty);
-          if (!readBy.contains(user.$id)) {
+        final chatId = chatRow.$id;
+        final cached = ChatMessageCache.get(chatId);
+        if (cached != null) {
+          final unreadInChat = cached.messages
+              .where((m) => !m.isSent && !m.isRead)
+              .length;
+          if (unreadInChat > 0) {
+            unreadChatCount++;
+          }
+        } else {
+          final msgs = await AppwriteService.fetchMessagesForChat(
+            chatId,
+            limit: 10,
+          );
+          final unreadMessages = msgs.rows.where((row) {
+            final data = row.data;
+            final senderId = (data['senderId'] as String?) ?? '';
+            if (senderId == user.$id) return false;
+            final readBy = data['readBy'] is List
+                ? (data['readBy'] as List).map((e) => e.toString().trim())
+                : ((data['readBy'] as String?) ?? '').split(',').map((e) => e.trim());
+            return !readBy.contains(user.$id);
+          });
+          if (unreadMessages.isNotEmpty) {
             unreadChatCount++;
           }
         }
@@ -423,7 +631,42 @@ class _MainScreenState extends State<MainScreen> {
       _badgeSub?.stream.listen((event) async {
         if (!mounted) return;
         if (event.events.isEmpty) return;
-        // Any create/update/delete affecting messages or notifications should refresh badges.
+        final name = event.events.first;
+        final payload = event.payload;
+        if (name.contains('.create') || name.contains('.update')) {
+          final chatId = (payload['chatId'] as String?)?.trim() ?? '';
+          if (chatId.isNotEmpty) {
+            final senderId = (payload['senderId'] as String?) ?? '';
+            final user = await AppwriteService.getCurrentUser();
+            if (user != null) {
+              final readBy = payload['readBy'] is List
+                  ? (payload['readBy'] as List).map((e) => e.toString().trim()).toList()
+                  : ((payload['readBy'] as String?) ?? '').split(',').map((e) => e.trim()).toList();
+              final timestampStr = payload['timestamp'] as String? ?? payload['createdAt'] as String? ?? '';
+              final timestamp = DateTime.tryParse(timestampStr) ?? DateTime.now();
+              
+              final isSent = senderId == user.$id;
+              final isRead = readBy.contains(user.$id);
+              
+              final msg = Message(
+                id: payload['\$id'] as String? ?? '',
+                content: (payload['content'] as String?) ?? '',
+                mediaUrl: payload['mediaUrl'] as String?,
+                thumbnailUrl: payload['thumbnailUrl'] as String?,
+                mediaType: payload['mediaType'] as String?,
+                timestamp: timestamp,
+                isSent: isSent,
+                isRead: isRead,
+                deliveryStatus: MessageDeliveryStatusX.fromRaw(
+                  payload['deliveryStatus'],
+                  isRead: isRead,
+                  isSent: isSent,
+                ),
+              );
+              ChatMessageCache.addOrUpdateMessage(chatId, msg);
+            }
+          }
+        }
         await _loadBadges();
       });
     } catch (_) {}
@@ -461,4 +704,254 @@ class _MainScreenState extends State<MainScreen> {
     _banSub?.close();
     super.dispose();
   }
+}
+
+class _WelcomeIntroDialog extends StatefulWidget {
+  const _WelcomeIntroDialog();
+
+  @override
+  State<_WelcomeIntroDialog> createState() => _WelcomeIntroDialogState();
+}
+
+class _WelcomeIntroDialogState extends State<_WelcomeIntroDialog> {
+  final PageController _pageController = PageController();
+  int _pageIndex = 0;
+
+  static const List<_WelcomePageData> _pages = [
+    _WelcomePageData(
+      icon: LucideIcons.flame,
+      title: 'Creators Earn Daily',
+      body: 'Unlike traditional social platforms, XapZap rewards you from day one. '
+          'Post videos, reels, stories, or images, and start generating earnings immediately.',
+      bullets: [
+        'Instant Monetization: No follower minimums to start earning',
+        'Daily Cashouts: Your balance updates daily for easy withdrawals',
+        'Upload Anything: Share videos, reels, stories, or news',
+        'Creator-First Split: Earn directly from ad views on your posts',
+      ],
+    ),
+    _WelcomePageData(
+      icon: LucideIcons.users,
+      title: 'Lifetime 10% Referrals',
+      body: 'Invite other creators to join XapZap and build your passive income stream.',
+      bullets: [
+        'Share your personal invite link with friends',
+        'Earn a lifetime 10% bonus from the earnings of the people you referred',
+        'Track your referred users and watch combined earnings grow',
+      ],
+    ),
+    _WelcomePageData(
+      icon: LucideIcons.wallet,
+      title: 'Monetization Made Easy',
+      body: 'Every view on your posts generates real value. Watch your balance grow '
+          'transparently as people interact with your content.',
+      bullets: [
+        'Transparent ad revenue sharing model',
+        'Simple, automated revenue sync directly to your wallet',
+        'Earn from views, likes, and general post engagement',
+      ],
+    ),
+    _WelcomePageData(
+      icon: LucideIcons.rocket,
+      title: 'Organic Reach & Growth',
+      body: 'Our advanced batch distribution algorithms ensure new creators get seen '
+          'and build their audience without paywalls.',
+      bullets: [
+        'Built to help new creators gain visibility organically',
+        'Jittered algorithm ensures all posts get fair initial views',
+        'Post consistently to grow your reach and maximize earnings',
+      ],
+    ),
+  ];
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _finish() async {
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _next() async {
+    if (_pageIndex >= _pages.length - 1) {
+      await _finish();
+      return;
+    }
+
+    await _pageController.nextPage(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 640),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              colorScheme.primary.withOpacity(0.12),
+              colorScheme.surface,
+              const Color(0xFFFFC857).withOpacity(0.10),
+            ],
+          ),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Welcome to XapZap',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _finish,
+                  child: const Text('Skip'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: PageView.builder(
+                controller: _pageController,
+                itemCount: _pages.length,
+                onPageChanged: (index) {
+                  setState(() => _pageIndex = index);
+                },
+                itemBuilder: (context, index) {
+                  final page = _pages[index];
+                  return SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: colorScheme.primary.withOpacity(0.14),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Icon(
+                            page.icon,
+                            color: colorScheme.primary,
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          page.title,
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          page.body,
+                          style: TextStyle(
+                            fontSize: 15,
+                            height: 1.5,
+                            color: theme.textTheme.bodyMedium?.color,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        ...page.bullets.map(
+                          (bullet) => Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Padding(
+                                  padding: EdgeInsets.only(top: 3),
+                                  child: Icon(
+                                    LucideIcons.sparkles,
+                                    size: 16,
+                                    color: Color(0xFF29ABE2),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    bullet,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500,
+                                      height: 1.45,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                ...List.generate(
+                  _pages.length,
+                  (index) => AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    margin: const EdgeInsets.only(right: 8),
+                    width: _pageIndex == index ? 22 : 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: _pageIndex == index
+                          ? colorScheme.primary
+                          : colorScheme.primary.withOpacity(0.24),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                FilledButton(
+                  onPressed: _next,
+                  child: Text(
+                    _pageIndex == _pages.length - 1
+                        ? 'Start exploring'
+                        : 'Next',
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WelcomePageData {
+  final IconData icon;
+  final String title;
+  final String body;
+  final List<String> bullets;
+
+  const _WelcomePageData({
+    required this.icon,
+    required this.title,
+    required this.body,
+    required this.bullets,
+  });
 }

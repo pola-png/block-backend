@@ -1,22 +1,69 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
+import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+import 'package:appwrite/models.dart' as aw;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:timeago/timeago.dart' as timeago;
-import 'package:appwrite/models.dart' as aw;
-import 'package:google_mobile_ads/google_mobile_ads.dart';
+
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
-import '../services/storage_service.dart';
-import '../services/ad_helper.dart';
-import '../widgets/voice_note_player.dart';
-import '../widgets/voice_recorder.dart';
-import '../widgets/taggable_text.dart';
 import '../screens/hashtag_feed_screen.dart';
 import '../screens/profile_screen.dart';
+import '../services/appwrite_service.dart';
+import '../services/storage_service.dart';
+import '../widgets/taggable_text.dart';
+import '../widgets/tv_focusable_action.dart';
+import '../widgets/voice_note_player.dart';
+import '../widgets/verification_badge.dart';
+
+enum CommentScreenMode {
+  preview,
+  fullScreen,
+}
+
+Future<void> showCommentModal(
+  BuildContext context, {
+  required Post post,
+  bool isGuest = false,
+  VoidCallback? onGuestAction,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Theme.of(context).colorScheme.surface,
+    barrierColor: Colors.transparent,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+    ),
+    builder: (_) => FractionallySizedBox(
+      heightFactor: 0.6,
+      child: CommentScreen(
+        post: post,
+        isGuest: isGuest,
+        onGuestAction: onGuestAction,
+        mode: CommentScreenMode.preview,
+      ),
+    ),
+  );
+}
 
 class CommentScreen extends StatefulWidget {
   final Post post;
-  const CommentScreen({super.key, required this.post});
+  final bool isGuest;
+  final VoidCallback? onGuestAction;
+  final CommentScreenMode mode;
+  final aw.Row? parentComment;
+
+  const CommentScreen({
+    super.key,
+    required this.post,
+    this.isGuest = false,
+    this.onGuestAction,
+    this.mode = CommentScreenMode.fullScreen,
+    this.parentComment,
+  });
 
   @override
   State<CommentScreen> createState() => _CommentScreenState();
@@ -26,43 +73,82 @@ class _CommentScreenState extends State<CommentScreen> {
   final TextEditingController _commentController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _inputFocusNode = FocusNode();
-  bool _loading = false;
+
+  bool _loading = true;
+  bool _isSubmitting = false;
   String? _currentUserId;
   String? _currentUserAvatarUrl;
+  String? _replyToCommentId;
+  RealtimeSubscription? _commentsSub;
+  RealtimeSubscription? _commentLikesSub;
+
   final Set<String> _likedCommentIds = <String>{};
   final Map<String, List<aw.Row>> _repliesByParent = <String, List<aw.Row>>{};
   final List<aw.Row> _rootComments = <aw.Row>[];
-  String? _replyToCommentId;
-  bool _isVoiceMode = false;
+  static final Map<String, bool> _commenterVerifiedCache = {};
+  static final Map<String, bool> _commenterAdminCache = {};
+
+  bool get _isPreview => widget.mode == CommentScreenMode.preview;
 
   @override
   void initState() {
     super.initState();
-    _load();
-    _getCurrentUser();
+    _loadCurrentUser();
+    _loadComments();
+    _subscribeComments();
   }
 
-  Future<String?> _resolveAvatar(String raw) async {
-    if (raw.isEmpty) return null;
-    if (raw.contains('cloud.appwrite.io') || raw.startsWith('http')) {
-      return raw;
-    }
-    try {
-      return await WasabiService.getSignedUrl(raw);
-    } catch (_) {
-      return null;
-    }
+  @override
+  void dispose() {
+    _commentsSub?.close();
+    _commentLikesSub?.close();
+    _commentController.dispose();
+    _scrollController.dispose();
+    _inputFocusNode.dispose();
+    super.dispose();
   }
 
-  Future<void> _getCurrentUser() async {
+  void _subscribeComments() {
+    final channel =
+        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.commentsCollectionId}.documents';
+    _commentsSub?.close();
+    _commentsSub = AppwriteService.realtime.subscribe([channel]);
+    _commentsSub?.stream.listen((event) {
+      final payload = event.payload;
+      final data = payload['data'];
+      if (data is! Map<String, dynamic>) return;
+      final postId = (data['postId'] as String?)?.trim();
+      if (postId != widget.post.id) return;
+      unawaited(_loadComments());
+    });
+
+    final likesChannel =
+        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.commentLikesCollectionId}.documents';
+    _commentLikesSub?.close();
+    _commentLikesSub = AppwriteService.realtime.subscribe([likesChannel]);
+    _commentLikesSub?.stream.listen((event) {
+      final payload = event.payload;
+      final data = payload['data'];
+      if (data is! Map<String, dynamic>) return;
+      final commentId = (data['commentId'] as String?)?.trim();
+      if (commentId == null || commentId.isEmpty) return;
+      if (_rootComments.any((row) => row.$id == commentId) ||
+          _repliesByParent.values
+              .expand((rows) => rows)
+              .any((row) => row.$id == commentId)) {
+        unawaited(_syncLikedCommentIds());
+      }
+    });
+  }
+
+  Future<void> _loadCurrentUser() async {
     final user = await AppwriteService.getCurrentUser();
     if (user == null) {
-      if (mounted) {
-        setState(() {
-          _currentUserId = null;
-          _currentUserAvatarUrl = null;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _currentUserId = null;
+        _currentUserAvatarUrl = null;
+      });
       return;
     }
 
@@ -70,26 +156,30 @@ class _CommentScreenState extends State<CommentScreen> {
     String? avatar = prof?.data['avatarUrl'] as String?;
     if (avatar != null && avatar.isNotEmpty && !avatar.startsWith('http')) {
       try {
-        avatar = await WasabiService.getSignedUrl(avatar);
+        avatar = await StorageService.getSignedUrl(avatar);
       } catch (_) {}
     }
-    if (mounted) {
-      setState(() {
-        _currentUserId = user.$id;
-        _currentUserAvatarUrl = avatar;
-      });
-    }
+
+    if (!mounted) return;
+    setState(() {
+      _currentUserId = user.$id;
+      _currentUserAvatarUrl = avatar;
+    });
+    await _syncLikedCommentIds();
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  Future<void> _loadComments() async {
+    if (mounted) {
+      setState(() => _loading = true);
+    }
     try {
       final docs = await AppwriteService.fetchComments(widget.post.id);
       if (!mounted) return;
-      final rows = docs.rows;
+
       _rootComments.clear();
       _repliesByParent.clear();
-      for (final row in rows) {
+
+      for (final row in docs.rows) {
         final parentId = row.data['parentCommentId'] as String?;
         if (parentId == null || parentId.isEmpty) {
           _rootComments.add(row);
@@ -97,622 +187,837 @@ class _CommentScreenState extends State<CommentScreen> {
           _repliesByParent.putIfAbsent(parentId, () => <aw.Row>[]).add(row);
         }
       }
+      if (_currentUserId != null) {
+        await _syncLikedCommentIds();
+      }
+
       setState(() => _loading = false);
-    } finally {
-      if (mounted) setState(() => _loading = false);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
     }
   }
 
-  @override
-  void dispose() {
-    _commentController.dispose();
-    _scrollController.dispose();
-    _inputFocusNode.dispose();
-    super.dispose();
+  Future<void> _syncLikedCommentIds() async {
+    final userId = _currentUserId;
+    if (userId == null || userId.isEmpty) return;
+    final commentIds = <String>[
+      ..._rootComments.map((row) => row.$id),
+      ..._repliesByParent.values.expand((rows) => rows.map((row) => row.$id)),
+    ];
+    final likedIds = await AppwriteService.fetchLikedCommentIds(
+      userId,
+      commentIds: commentIds,
+    );
+    if (!mounted) return;
+    setState(() {
+      _likedCommentIds
+        ..clear()
+        ..addAll(likedIds);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
+    if (_isPreview) {
+      return _buildSheetContent(context);
+    }
     return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
+        backgroundColor: Theme.of(context).colorScheme.surface,
         leading: IconButton(
-          icon: Icon(LucideIcons.arrowLeft, color: theme.iconTheme.color),
+          icon: const Icon(LucideIcons.arrowLeft),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(
-          'Comments',
-          style: TextStyle(
-            color: theme.colorScheme.onSurface,
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+        title: Text(widget.parentComment == null ? 'Comments' : 'Replies'),
         centerTitle: true,
-        backgroundColor: theme.colorScheme.surface,
       ),
-      backgroundColor: theme.scaffoldBackgroundColor,
-      body: Column(
-        children: [
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _rootComments.length,
-                    itemBuilder: (context, index) {
-                      // Insert ads inline: banner every 5th, native every 20th comment.
-                      final widgets = <Widget>[];
-                      if (index > 0 && (index + 1) % 20 == 0) {
-                        widgets.add(_buildNativeAd());
-                      } else if (index > 0 && (index + 1) % 5 == 0) {
-                        widgets.add(_buildBannerAd());
-                      }
-                      widgets.add(_buildThread(_rootComments[index]));
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: widgets,
-                      );
-                    },
-                  ),
-          ),
-          _buildInput(),
-        ],
-      ),
+      body: _buildBody(context),
     );
   }
 
-  Widget _buildThread(aw.Row root) {
-    final replies = _repliesByParent[root.$id] ?? const <aw.Row>[];
+  Widget _buildSheetContent(BuildContext context) {
+    final theme = Theme.of(context);
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildItem(root, isReply: false),
-        for (final r in replies) Padding(
-          padding: const EdgeInsets.only(left: 52),
-          child: _buildItem(r, isReply: true),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+          child: Column(
+            children: [
+              Container(
+                width: 44,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    'Comments',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: _openFullScreen,
+                    child: const Text('View all comments'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        Expanded(child: _buildBody(context)),
+      ],
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    return Column(
+      children: [
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _buildCommentList(context),
+        ),
+        AnimatedPadding(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.only(bottom: bottomInset),
+          child: _buildInput(context),
         ),
       ],
     );
   }
 
-  Widget _buildBannerAd() {
-    if (kIsWeb) return const SizedBox.shrink();
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      height: 50,
-      child: AdWidget(
-        ad: BannerAd(
-          size: AdSize.banner,
-          adUnitId: AdHelper.banner,
-          listener: BannerAdListener(
-            onAdFailedToLoad: (ad, error) => ad.dispose(),
+  Widget _buildCommentList(BuildContext context) {
+    final comments = _visibleComments();
+    final parentComment = widget.parentComment;
+
+    if (comments.isEmpty) {
+      return Center(
+        child: Text(
+          parentComment == null ? 'No comments yet' : 'No replies yet',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 15,
           ),
-          request: const AdRequest(),
-        )..load(),
-      ),
+        ),
+      );
+    }
+
+    return ListView(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      children: [
+        if (parentComment != null) ...[
+          _buildCommentItem(parentComment, isParentPreview: true),
+          const SizedBox(height: 12),
+        ],
+        for (final doc in comments) ...[
+          _buildCommentItem(doc),
+          const SizedBox(height: 10),
+        ],
+      ],
     );
   }
 
-  Widget _buildNativeAd() {
-    if (kIsWeb) return const SizedBox.shrink();
-    return const _InlineNativeAd(height: 320);
+  List<aw.Row> _visibleComments() {
+    final parentComment = widget.parentComment;
+    if (parentComment != null) {
+      return List<aw.Row>.from(
+          _repliesByParent[parentComment.$id] ?? const <aw.Row>[]);
+    }
+
+    if (_isPreview) {
+      return _rootComments.take(3).toList();
+    }
+    return List<aw.Row>.from(_rootComments);
   }
 
-  Widget _buildItem(aw.Row doc, {required bool isReply}) {
+  Widget _buildCommentItem(
+    aw.Row doc, {
+    bool isParentPreview = false,
+  }) {
     final d = doc.data;
     final id = doc.$id;
-    final avatarRaw = (d['userAvatar'] ?? '') as String;
-    final username = d['username'] ?? 'user';
-    final createdAt = d['createdAt'] ?? d['timestamp'] ?? DateTime.now().toIso8601String();
-    DateTime ts;
-    try {
-      ts = DateTime.parse(createdAt);
-    } catch (_) {
-      ts = DateTime.now();
+    final avatarRaw = (d['userAvatar'] as String?) ?? '';
+    final displayName = (d['displayName'] as String?)?.trim() ?? '';
+    final userId = (d['userId'] as String?)?.trim() ?? '';
+    bool isVerified = false;
+    bool isAdmin = false;
+    if (userId.isNotEmpty) {
+      if (_commenterVerifiedCache.containsKey(userId)) {
+        isVerified = _commenterVerifiedCache[userId]!;
+        isAdmin = _commenterAdminCache[userId]!;
+      } else {
+        unawaited(() async {
+          try {
+            final prof = await AppwriteService.getProfileByUserId(userId);
+            if (prof != null) {
+              final v =
+                  prof.data['isVerified'] == true || prof.data['verified'] == true;
+              final a = prof.data['isAdmin'] == true;
+              _commenterVerifiedCache[userId] = v;
+              _commenterAdminCache[userId] = a;
+              if (mounted) setState(() {});
+            }
+          } catch (_) {}
+        }());
+      }
     }
-    final now = DateTime.now();
-    final diff = now.difference(ts);
-    final timeLabel = diff.inSeconds < 60 ? 'Just now' : timeago.format(ts);
-    final voiceUrl = (d['voiceUrl'] is String && (d['voiceUrl'] as String).isNotEmpty) ? d['voiceUrl'] as String : null;
-    final content = (d['content'] ?? '').toString();
+    final createdAt =
+        d['createdAt'] ?? d['timestamp'] ?? DateTime.now().toIso8601String();
+    DateTime timestamp;
+    try {
+      timestamp = DateTime.parse(createdAt.toString());
+    } catch (_) {
+      timestamp = DateTime.now();
+    }
     final likesRaw = d['likes'];
     final repliesRaw = d['replies'];
     final likes = likesRaw is int ? likesRaw : int.tryParse('$likesRaw') ?? 0;
-    final replies = repliesRaw is int ? repliesRaw : int.tryParse('$repliesRaw') ?? 0;
-
+    final replies =
+        repliesRaw is int ? repliesRaw : int.tryParse('$repliesRaw') ?? 0;
     final isLiked = _likedCommentIds.contains(id);
+    final voiceUrl = (d['voiceUrl'] as String?)?.trim();
+    final content = (d['content'] as String?)?.trim() ?? '';
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final bubbleColor = isDark
-        ? theme.colorScheme.primary.withOpacity(0.18)
+    final bubbleColor = theme.brightness == Brightness.dark
+        ? theme.colorScheme.primary.withOpacity(0.16)
         : const Color(0xFFF3F4F6);
-    final textColor = theme.colorScheme.onSurface;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
-      child: GestureDetector(
-        onLongPress: () => _onCommentLongPress(doc),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            FutureBuilder<String?>(
-              future: _resolveAvatar(avatarRaw),
-              builder: (context, snap) {
-                final url = snap.data;
-                if (url == null || url.isEmpty) {
-                  return CircleAvatar(
-                    radius: 30,
-                    backgroundColor: Colors.grey[200],
-                    child: const Icon(Icons.person, color: Colors.grey),
-                  );
-                }
-                return CircleAvatar(
-                  radius: 30,
-                  backgroundColor: Colors.grey[200],
-                  backgroundImage: NetworkImage(url),
-                );
-              },
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: bubbleColor,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Text(
-                              username,
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 16,
-                                color: textColor,
-                              ),
+    return TvFocusableAction(
+      onLongPress: isParentPreview ? null : () => _onCommentLongPress(doc),
+      onTvPressed: isParentPreview ? null : () => _onCommentLongPress(doc),
+      borderRadius: BorderRadius.circular(18),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Builder(
+            builder: (context) {
+              final url = StorageService.getImageDisplayUrlSync(avatarRaw);
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _openCommentOwnerProfile(doc),
+                child: url.isEmpty
+                    ? CircleAvatar(
+                        radius: 20,
+                        backgroundColor:
+                            theme.colorScheme.surfaceContainerHighest,
+                        child: Icon(
+                          Icons.person,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      )
+                    : CircleAvatar(
+                        radius: 20,
+                        backgroundImage: NetworkImage(url),
+                      ),
+              );
+            },
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                  decoration: BoxDecoration(
+                    color: bubbleColor,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          TvFocusableAction(
+                            onPressed: () => _openCommentOwnerProfile(doc),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  displayName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                    color: Color(0xFF1DA1F2),
+                                  ),
+                                ),
+                                if (isVerified || isAdmin) ...[
+                                  const SizedBox(width: 4),
+                                  VerificationBadge(
+                                    size: 13,
+                                    isPremium: isAdmin,
+                                  ),
+                                ],
+                              ],
                             ),
+                          ),
                           const SizedBox(width: 8),
                           Text(
-                            timeLabel,
-                              style: TextStyle(
-                                color: theme.colorScheme.onSurfaceVariant,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        if (voiceUrl != null)
-                          VoiceNotePlayer(url: voiceUrl)
-                        else
-                          TaggableExpandableText(
-                            text: content,
+                            _formatTimeAgo(timestamp),
                             style: TextStyle(
-                              fontSize: 20,
-                              color: textColor,
-                              height: 1.5,
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurfaceVariant,
                             ),
-                            onMentionTap: (usernameToken) async {
-                              final handle = usernameToken.replaceAll('@', '').trim();
-                              if (handle.isEmpty) return;
-                              final prof =
-                                  await AppwriteService.getProfileByUsername(handle);
-                              if (!mounted) return;
-                              if (prof == null) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('User @$handle not found')),
-                                );
-                                return;
-                              }
-                              final data = prof.data;
-                              final userId = data['userId'] as String? ?? prof.$id;
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => ProfileScreen(userId: userId),
-                                ),
-                              );
-                            },
-                            onHashtagTap: (tagToken) {
-                              final clean = tagToken.replaceAll('#', '').trim();
-                              if (clean.isEmpty) return;
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => HashtagFeedScreen(tag: clean),
-                                ),
-                              );
-                            },
                           ),
-                      ],
-                    ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      if (voiceUrl != null && voiceUrl.isNotEmpty)
+                        VoiceNotePlayer(url: voiceUrl)
+                      else
+                        TaggableExpandableText(
+                          text: content,
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: theme.colorScheme.onSurface,
+                            height: 1.45,
+                          ),
+                          onMentionTap: _handleMentionTap,
+                          onHashtagTap: _handleHashtagTap,
+                        ),
+                    ],
                   ),
-                  const SizedBox(height: 4),
-                  Row(
+                ),
+                if (!isParentPreview) ...[
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 16,
+                    runSpacing: 8,
                     children: [
-                      GestureDetector(
-                        onTap: () {
-                          if (_currentUserId == null) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Sign in to like comments.')),
-                            );
-                            return;
-                          }
-                          setState(() {
-                            final currentLikesRaw = d['likes'];
-                            final currentLikes = currentLikesRaw is int
-                                ? currentLikesRaw
-                                : int.tryParse('$currentLikesRaw') ?? 0;
-                            if (isLiked) {
-                              _likedCommentIds.remove(id);
-                              d['likes'] = (currentLikes - 1).clamp(0, 1 << 31);
-                            } else {
-                              _likedCommentIds.add(id);
-                              d['likes'] = (currentLikes + 1).clamp(0, 1 << 31);
-                            }
-                          });
-                          // Persist like state (optimistic, fire and forget)
-                          if (isLiked) {
-                            AppwriteService.unlikeComment(id);
-                          } else {
-                            AppwriteService.likeComment(id);
-                          }
-                        },
+                      TvFocusableAction(
+                        onPressed: () => _toggleLike(doc),
                         child: Text(
                           likes > 0 ? 'Like $likes' : 'Like',
                           style: TextStyle(
-                            fontSize: 16,
-                            color: isLiked ? const Color(0xFF1DA1F2) : Colors.grey[600],
+                            fontSize: 13,
                             fontWeight: FontWeight.w700,
-                            height: 1.3,
+                            color: isLiked
+                                ? const Color(0xFF1DA1F2)
+                                : theme.colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ),
-                      const SizedBox(width: 16),
-                    GestureDetector(
-                      onTap: () {
-                        _commentController.text = '@$username ';
-                        _commentController.selection = TextSelection.fromPosition(
-                          TextPosition(offset: _commentController.text.length),
-                        );
-                        _replyToCommentId = id;
-                        _inputFocusNode.requestFocus();
-                      },
-                      child: Text(
-                        replies > 0 ? 'Reply $replies' : 'Reply',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.grey[600],
-                          fontWeight: FontWeight.w700,
-                          height: 1.3,
+                      TvFocusableAction(
+                        onPressed: () => _startReply(doc),
+                        child: Text(
+                          'Reply',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
-                    ),
+                      if (replies > 0 && widget.parentComment == null)
+                        TvFocusableAction(
+                          onPressed: () => _openReplyThread(doc),
+                          child: Text(
+                            'View $replies ${replies == 1 ? 'reply' : 'replies'}',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1DA1F2),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ],
-              ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildInput() {
+  Widget _buildInput(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final inputFillColor = isDark ? const Color(0xFF111827) : Colors.grey[100];
-    final textColor = theme.textTheme.bodyMedium?.color ?? Colors.black;
+    final inputFillColor = theme.brightness == Brightness.dark
+        ? const Color(0xFF111827)
+        : Colors.grey[100];
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: Theme.of(context).colorScheme.background,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(top: BorderSide(color: theme.dividerColor)),
+      ),
       child: SafeArea(
-        child: Row(
+        top: false,
+        bottom: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: Colors.grey[200],
-              backgroundImage: _currentUserAvatarUrl != null &&
-                      _currentUserAvatarUrl!.isNotEmpty
-                  ? NetworkImage(_currentUserAvatarUrl!)
-                  : null,
-              child: (_currentUserAvatarUrl == null ||
-                      _currentUserAvatarUrl!.isEmpty)
-                  ? const Icon(Icons.person, color: Colors.grey)
-                  : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _isVoiceMode
-                  ? VoiceRecorder(onRecorded: _handleVoiceRecorded)
-                  : TextField(
-                      controller: _commentController,
-                      focusNode: _inputFocusNode,
-                      decoration: InputDecoration(
-                        hintText: 'Add a comment...',
-                        hintStyle: TextStyle(color: textColor.withOpacity(0.6)),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
-                        filled: true,
-                        fillColor: inputFillColor,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            if (_replyToCommentId != null || widget.parentComment != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _replyToCommentId != null ||
+                                widget.parentComment != null
+                            ? 'Replying to a comment'
+                            : '',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
                       ),
-                      style: TextStyle(color: textColor, fontSize: 16),
-                      onSubmitted: _submit,
                     ),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _replyToCommentId = null;
+                          _commentController.clear();
+                        });
+                      },
+                      child: const Text('Cancel'),
+                    ),
+                  ],
+                ),
+              ),
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                  backgroundImage: _currentUserAvatarUrl != null &&
+                          _currentUserAvatarUrl!.isNotEmpty
+                      ? NetworkImage(_currentUserAvatarUrl!)
+                      : null,
+                  child: (_currentUserAvatarUrl == null ||
+                          _currentUserAvatarUrl!.isEmpty)
+                      ? Icon(
+                          Icons.person,
+                          size: 18,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        )
+                      : null,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _commentController,
+                    focusNode: _inputFocusNode,
+                    enabled: !_isSubmitting,
+                    decoration: InputDecoration(
+                      hintText: widget.parentComment != null ||
+                              _replyToCommentId != null
+                          ? 'Write a reply...'
+                          : 'Add a comment...',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(999),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: inputFillColor,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                    ),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: _submitComment,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: _isSubmitting
+                      ? null
+                      : () => _submitComment(_commentController.text),
+                  style: FilledButton.styleFrom(
+                    shape: const StadiumBorder(),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                  child: Text(_isSubmitting ? 'Posting' : 'Post'),
+                ),
+              ],
             ),
-            if (!_isVoiceMode) ...[
-              IconButton(
-                icon: const Icon(LucideIcons.mic, color: Color(0xFF1DA1F2)),
-                onPressed: () {
-                  if (_currentUserId == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Sign in to record voice comments.')),
-                    );
-                    return;
-                  }
-                  setState(() => _isVoiceMode = true);
-                },
-              ),
-              IconButton(
-                icon: const Icon(LucideIcons.send, color: Color(0xFF1DA1F2)),
-                onPressed: () => _submit(_commentController.text),
-              ),
-            ],
           ],
         ),
       ),
     );
   }
 
-  Future<void> _submit(String text) async {
+  Future<void> _submitComment(String text) async {
     final content = text.trim();
-    if (content.isEmpty) return;
+    if (content.isEmpty || _isSubmitting) return;
+    if (widget.isGuest) {
+      widget.onGuestAction?.call();
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
     try {
-      aw.Row doc;
-      final replyingTo = _replyToCommentId;
-      if (replyingTo != null) {
-        doc = await AppwriteService.createReplyComment(widget.post.id, replyingTo, content);
-        await AppwriteService.incrementCommentReplies(replyingTo, 1);
+      final parentId = widget.parentComment?.$id ?? _replyToCommentId;
+      final aw.Row doc;
+      if (parentId != null && parentId.isNotEmpty) {
+        doc = await AppwriteService.createReplyComment(
+          widget.post.id,
+          parentId,
+          content,
+        );
+        unawaited(AppwriteService.incrementCommentReplies(parentId, 1));
       } else {
         doc = await AppwriteService.createComment(widget.post.id, content);
       }
+
+      unawaited(AppwriteService.incrementPostComments(widget.post.id, 1));
+
       if (!mounted) return;
       setState(() {
-        if (replyingTo != null) {
-          _repliesByParent.putIfAbsent(replyingTo, () => <aw.Row>[]).insert(0, doc);
-          // bump local replies count on parent
-          final parentIndex = _rootComments.indexWhere((r) => r.$id == replyingTo);
-          if (parentIndex != -1) {
-            final pd = _rootComments[parentIndex].data;
-            final raw = pd['replies'];
-            final current = raw is int ? raw : int.tryParse('$raw') ?? 0;
-            pd['replies'] = (current + 1).clamp(0, 1 << 31);
+        if (parentId != null && parentId.isNotEmpty) {
+          _repliesByParent
+              .putIfAbsent(parentId, () => <aw.Row>[])
+              .insert(0, doc);
+          if (widget.parentComment == null) {
+            final parentIndex =
+                _rootComments.indexWhere((row) => row.$id == parentId);
+            if (parentIndex != -1) {
+              final parentData = _rootComments[parentIndex].data;
+              final rawReplies = parentData['replies'];
+              final currentReplies = rawReplies is int
+                  ? rawReplies
+                  : int.tryParse('$rawReplies') ?? 0;
+              parentData['replies'] = currentReplies + 1;
+            }
           }
         } else {
           _rootComments.insert(0, doc);
         }
-        _replyToCommentId = null;
         _commentController.clear();
+        _replyToCommentId = null;
+        _isSubmitting = false;
       });
-      await AppwriteService.incrementPostComments(widget.post.id, 1);
-      _scrollController.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          0,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to comment: $e')));
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_commentErrorMessage(e))),
+      );
     }
   }
 
-  Future<void> _handleVoiceRecorded(String? path) async {
-    setState(() => _isVoiceMode = false);
-    if (path == null || _currentUserId == null) return;
-    final scaffoldMessenger = ScaffoldMessenger.of(context);
+  void _startReply(aw.Row doc) {
+    final displayName = (doc.data['displayName'] as String?)?.trim() ?? '';
+    setState(() {
+      _replyToCommentId = widget.parentComment?.$id ?? doc.$id;
+      _commentController.text = displayName.isNotEmpty ? '@$displayName ' : '';
+      _commentController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _commentController.text.length),
+      );
+    });
+    _inputFocusNode.requestFocus();
+  }
+
+  void _openFullScreen() {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    if (_isPreview) {
+      Navigator.of(context).pop();
+    }
+    unawaited(
+      navigator.push(
+        MaterialPageRoute(
+          builder: (_) => CommentScreen(
+            post: widget.post,
+            isGuest: widget.isGuest,
+            onGuestAction: widget.onGuestAction,
+            mode: CommentScreenMode.fullScreen,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openReplyThread(aw.Row doc) {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    if (_isPreview) {
+      Navigator.of(context).pop();
+    }
+    unawaited(
+      navigator.push(
+        MaterialPageRoute(
+          builder: (_) => CommentScreen(
+            post: widget.post,
+            isGuest: widget.isGuest,
+            onGuestAction: widget.onGuestAction,
+            mode: CommentScreenMode.fullScreen,
+            parentComment: doc,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleLike(aw.Row doc) async {
+    if (widget.isGuest) {
+      widget.onGuestAction?.call();
+      return;
+    }
+    if (_currentUserId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sign in to like comments.')),
+      );
+      return;
+    }
+
+    final commentId = doc.$id;
+    final isLiked = _likedCommentIds.contains(commentId);
+
     try {
-      final voiceUrl = await WasabiService.uploadVoiceComment(path, _currentUserId!);
-      if (voiceUrl == null) return;
-
-      final doc = await AppwriteService.createVoiceComment(widget.post.id, voiceUrl);
-      await AppwriteService.incrementPostComments(widget.post.id, 1);
-
-      if (!mounted) return;
-      setState(() {
-        _rootComments.insert(0, doc);
-      });
-
-      scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Voice comment posted!')));
-      _scrollController.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      if (isLiked) {
+        await AppwriteService.unlikeComment(commentId);
+      } else {
+        await AppwriteService.likeComment(commentId);
+      }
     } catch (e) {
       if (!mounted) return;
-      scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Failed to post voice comment.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to update like: $e')),
+      );
     }
+  }
+
+  String _commentErrorMessage(Object error) {
+    if (kDebugMode) {
+      return 'Failed to post comment: $error';
+    }
+    return 'Failed to post comment. Please try again.';
   }
 
   Future<void> _onCommentLongPress(aw.Row doc) async {
-    final d = doc.data;
-    final ownerId = d['userId'] as String?;
+    final ownerId = doc.data['userId'] as String?;
     if (_currentUserId == null || ownerId != _currentUserId) {
       return;
     }
-    final voiceUrl = (d['voiceUrl'] is String && (d['voiceUrl'] as String).isNotEmpty)
-        ? d['voiceUrl'] as String
-        : null;
 
+    final voiceUrl = (doc.data['voiceUrl'] as String?)?.trim();
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (voiceUrl == null)
-              ListTile(
-                leading: const Icon(Icons.edit),
-                title: const Text('Edit comment'),
-                onTap: () => Navigator.of(ctx).pop('edit'),
+            if (voiceUrl == null || voiceUrl.isEmpty)
+              TvFocusableAction(
+                onPressed: () => Navigator.of(ctx).pop('edit'),
+                child: ListTile(
+                  leading: const Icon(Icons.edit),
+                  title: const Text('Edit comment'),
+                  onTap: () => Navigator.of(ctx).pop('edit'),
+                ),
               ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete comment'),
-              onTap: () => Navigator.of(ctx).pop('delete'),
+            TvFocusableAction(
+              onPressed: () => Navigator.of(ctx).pop('delete'),
+              child: ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Delete comment'),
+                onTap: () => Navigator.of(ctx).pop('delete'),
+              ),
             ),
           ],
         ),
       ),
     );
 
-    if (action == 'edit' && voiceUrl == null) {
-      final controller = TextEditingController(text: (d['content'] ?? '').toString());
-      final newText = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Edit comment'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLines: null,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      );
-      if (newText == null || newText.isEmpty) return;
-      try {
-        final updated = await AppwriteService.updateRow(
-          AppwriteService.commentsCollectionId,
-          doc.$id,
-          {'content': newText},
-        );
-        if (!mounted) return;
-        setState(() {
-          final parentId = d['parentCommentId'] as String?;
-          if (parentId != null && parentId.isNotEmpty) {
-            final list = _repliesByParent[parentId];
-            if (list != null) {
-              final idx = list.indexWhere((r) => r.$id == doc.$id);
-              if (idx != -1) list[idx] = updated;
-            }
-          } else {
-            final idx = _rootComments.indexWhere((r) => r.$id == doc.$id);
-            if (idx != -1) _rootComments[idx] = updated;
-          }
-        });
-      } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to update comment: $e')),
-        );
-      }
+    if (action == 'edit') {
+      await _editComment(doc);
     } else if (action == 'delete') {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Delete comment?'),
-          content: const Text('This cannot be undone.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('Delete'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-      final parentId = d['parentCommentId'] as String?;
-      try {
-        await AppwriteService.deleteComment(doc.$id);
-        await AppwriteService.incrementPostComments(widget.post.id, -1);
-        if (parentId != null && parentId.isNotEmpty) {
-          await AppwriteService.incrementCommentReplies(parentId, -1);
-        }
-        if (!mounted) return;
-        setState(() {
-          if (parentId != null && parentId.isNotEmpty) {
-            final list = _repliesByParent[parentId];
-            list?.removeWhere((r) => r.$id == doc.$id);
-            // decrement local replies count on parent
-            final parentIndex = _rootComments.indexWhere((r) => r.$id == parentId);
-            if (parentIndex != -1) {
-              final pd = _rootComments[parentIndex].data;
-              final raw = pd['replies'];
-              final current = raw is int ? raw : int.tryParse('$raw') ?? 0;
-              pd['replies'] = (current - 1).clamp(0, 1 << 31);
-            }
-          } else {
-            _rootComments.removeWhere((r) => r.$id == doc.$id);
-            _repliesByParent.remove(doc.$id);
-          }
-        });
-      } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to delete comment: $e')),
-        );
-      }
+      await _deleteComment(doc);
     }
   }
-}
 
-class _InlineNativeAd extends StatefulWidget {
-  final double height;
-  const _InlineNativeAd({required this.height});
-
-  @override
-  State<_InlineNativeAd> createState() => _InlineNativeAdState();
-}
-
-class _InlineNativeAdState extends State<_InlineNativeAd> {
-  NativeAd? _ad;
-  bool _loaded = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _ad = NativeAd(
-      adUnitId: AdHelper.native,
-      factoryId: 'cardNative',
-      request: const AdRequest(),
-      listener: NativeAdListener(
-        onAdLoaded: (ad) {
-          if (mounted) setState(() => _loaded = true);
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-        },
+  Future<void> _editComment(aw.Row doc) async {
+    final controller =
+        TextEditingController(text: (doc.data['content'] as String?) ?? '');
+    final newText = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit comment'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: null,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
       ),
-    )..load();
+    );
+
+    if (newText == null || newText.isEmpty) return;
+
+    try {
+      final updated = await AppwriteService.updateRow(
+        AppwriteService.commentsCollectionId,
+        doc.$id,
+        <String, dynamic>{'content': newText},
+      );
+      if (!mounted) return;
+      setState(() {
+        final parentId = doc.data['parentCommentId'] as String?;
+        if (parentId != null && parentId.isNotEmpty) {
+          final replies = _repliesByParent[parentId];
+          final index = replies?.indexWhere((row) => row.$id == doc.$id) ?? -1;
+          if (replies != null && index != -1) {
+            replies[index] = updated;
+          }
+        } else {
+          final index = _rootComments.indexWhere((row) => row.$id == doc.$id);
+          if (index != -1) {
+            _rootComments[index] = updated;
+          }
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Failed to update comment. Please try again.')),
+      );
+    }
   }
 
-  @override
-  void dispose() {
-    _ad?.dispose();
-    super.dispose();
+  Future<void> _deleteComment(aw.Row doc) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete comment?'),
+        content: const Text('This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final parentId = doc.data['parentCommentId'] as String?;
+    try {
+      await AppwriteService.deleteComment(doc.$id);
+      unawaited(AppwriteService.incrementPostComments(widget.post.id, -1));
+      if (parentId != null && parentId.isNotEmpty) {
+        unawaited(AppwriteService.incrementCommentReplies(parentId, -1));
+      }
+      if (!mounted) return;
+      setState(() {
+        if (parentId != null && parentId.isNotEmpty) {
+          _repliesByParent[parentId]?.removeWhere((row) => row.$id == doc.$id);
+          final parentIndex =
+              _rootComments.indexWhere((row) => row.$id == parentId);
+          if (parentIndex != -1) {
+            final parentData = _rootComments[parentIndex].data;
+            final rawReplies = parentData['replies'];
+            final currentReplies = rawReplies is int
+                ? rawReplies
+                : int.tryParse('$rawReplies') ?? 0;
+            parentData['replies'] = (currentReplies - 1).clamp(0, 1 << 31);
+          }
+        } else {
+          _rootComments.removeWhere((row) => row.$id == doc.$id);
+          _repliesByParent.remove(doc.$id);
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Failed to delete comment. Please try again.')),
+      );
+    }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (!_loaded || _ad == null) return const SizedBox.shrink();
-    return SizedBox(
-      width: double.infinity,
-      height: widget.height,
-      child: AdWidget(ad: _ad!),
+  Future<void> _handleMentionTap(String usernameToken) async {
+    final handle = usernameToken.replaceAll('@', '').trim();
+    if (handle.isEmpty) return;
+    final prof = await AppwriteService.getProfileByUsername(handle);
+    if (!mounted) return;
+    if (prof == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('User @$handle not found')),
+      );
+      return;
+    }
+    final userId = prof.data['userId'] as String? ?? prof.$id;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId)),
     );
   }
+
+  void _handleHashtagTap(String tagToken) {
+    final clean = tagToken.replaceAll('#', '').trim();
+    if (clean.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => HashtagFeedScreen(tag: clean)),
+    );
+  }
+
+  Future<void> _openCommentOwnerProfile(aw.Row doc) async {
+    final data = doc.data;
+    String? userId = data['userId'] as String?;
+    if (userId == null || userId.isEmpty) {
+      final username = (data['username'] as String? ?? '').trim();
+      if (username.isNotEmpty) {
+        final prof = await AppwriteService.getProfileByUsername(username);
+        if (prof != null) {
+          userId = prof.data['userId'] as String? ?? prof.$id;
+        }
+      }
+    }
+    if (!mounted || userId == null || userId.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId)),
+    );
+  }
+
+
+  String _formatTimeAgo(DateTime timestamp) {
+    final diff = DateTime.now().difference(timestamp);
+    if (diff.inSeconds < 60) {
+      return 'Just now';
+    }
+    return timeago.format(timestamp);
+  }
 }
+

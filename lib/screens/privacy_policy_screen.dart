@@ -3,7 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class PrivacyPolicyScreen extends StatelessWidget {
-  const PrivacyPolicyScreen({super.key});
+  final bool showConsentActions;
+
+  const PrivacyPolicyScreen({
+    super.key,
+    this.showConsentActions = false,
+  });
 
   Future<void> _acceptPolicy(BuildContext context) async {
     final prefs = await SharedPreferences.getInstance();
@@ -74,20 +79,23 @@ For the purposes of this Privacy Policy:
               ),
             ),
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton(
-                  onPressed: _declinePolicy,
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                  child: const Text('Decline'),
-                ),
-                ElevatedButton(
-                  onPressed: () => _acceptPolicy(context),
-                  child: const Text('Accept'),
-                ),
-              ],
-            ),
+            if (showConsentActions)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  ElevatedButton(
+                    onPressed: _declinePolicy,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                    ),
+                    child: const Text('Decline'),
+                  ),
+                  ElevatedButton(
+                    onPressed: () => _acceptPolicy(context),
+                    child: const Text('Accept'),
+                  ),
+                ],
+              ),
           ],
         ),
       ),

@@ -49,8 +49,10 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
     if (_isLoading) return;
     setState(() => _isLoading = true);
     try {
-      final aw.RowList list =
-          await AppwriteService.searchPostsByHashtag(widget.tag, limit: 20, cursorId: _cursor);
+      final aw.RowList list = await AppwriteService.searchPostsByHashtag(
+          widget.tag,
+          limit: 20,
+          cursorId: _cursor);
       final rows = list.rows;
       final mapped = <Post>[];
       for (final d in rows) {
@@ -58,32 +60,34 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
         final List<String> rawMedia = data['mediaUrls'] is List
             ? (data['mediaUrls'] as List).map((e) => e.toString()).toList()
             : <String>[];
-        final kind = (data['postType'] ?? data['type'] ?? data['category']) as String?;
+        final postType = data['postType'] as String?;
         final title = data['title'] as String?;
         final thumbnailUrl = data['thumbnailUrl'] as String?;
-        final kindLower = (kind ?? '').toLowerCase();
-        final bool isVideoKind = kindLower.contains('video') || kindLower.contains('reel');
+        final postTypeLower = (postType ?? '').toLowerCase();
+        final bool isVideoPost =
+            postTypeLower.contains('video') || postTypeLower.contains('reel');
 
         String? videoUrl;
         String? firstImage;
         List<String> mediaForUi;
 
-        if (isVideoKind && rawMedia.isNotEmpty) {
+        if (isVideoPost && rawMedia.isNotEmpty) {
           final first = rawMedia.first;
-          videoUrl = (first.startsWith('http://') || first.startsWith('https://'))
-              ? first
-              : await WasabiService.getSignedUrl(first);
+          videoUrl =
+              (first.startsWith('http://') || first.startsWith('https://'))
+                  ? first
+                  : await StorageService.getSignedUrl(first);
           firstImage = thumbnailUrl?.isNotEmpty == true
               ? (thumbnailUrl!.startsWith('http')
                   ? thumbnailUrl
-                  : await WasabiService.getSignedUrl(thumbnailUrl))
+                  : await StorageService.getSignedUrl(thumbnailUrl))
               : (rawMedia.length > 1 ? rawMedia[1] : null);
           mediaForUi = firstImage != null ? <String>[firstImage] : <String>[];
         } else {
           firstImage = thumbnailUrl?.isNotEmpty == true
               ? (thumbnailUrl!.startsWith('http')
                   ? thumbnailUrl
-                  : await WasabiService.getSignedUrl(thumbnailUrl))
+                  : await StorageService.getSignedUrl(thumbnailUrl))
               : (rawMedia.isNotEmpty ? rawMedia.first : null);
           mediaForUi = rawMedia;
         }
@@ -93,12 +97,13 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
         mapped.add(
           Post(
             id: d.$id,
-            username: data['username'] as String? ?? 'No Name',
+            username: (data['displayName'] as String?)?.trim() ?? '',
             userAvatar: data['userAvatar'] as String? ?? '',
             content: data['content'] as String? ?? '',
             timestamp: DateTime.tryParse(d.$createdAt) ??
                 (data['createdAt'] != null
-                    ? DateTime.tryParse(data['createdAt'] as String? ?? '') ?? DateTime.now()
+                    ? DateTime.tryParse(data['createdAt'] as String? ?? '') ??
+                        DateTime.now()
                     : DateTime.now()),
             likes: data['likes'] as int? ?? 0,
             comments: data['comments'] as int? ?? 0,
@@ -107,7 +112,7 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
             views: data['views'] as int? ?? 0,
             imageUrl: firstImage,
             videoUrl: videoUrl,
-            kind: kind,
+            postType: postType,
             title: title,
             thumbnailUrl: thumbnailUrl,
           ),
@@ -139,7 +144,8 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text('#${widget.tag}', style: TextStyle(color: theme.colorScheme.onSurface)),
+        title: Text('#${widget.tag}',
+            style: TextStyle(color: theme.colorScheme.onSurface)),
         backgroundColor: theme.colorScheme.surface,
       ),
       body: RefreshIndicator(
@@ -184,3 +190,4 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
     );
   }
 }
+

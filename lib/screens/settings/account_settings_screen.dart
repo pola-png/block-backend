@@ -27,84 +27,89 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
     try {
       final user = await AppwriteService.getAccount();
       final userRow = await AppwriteService.getRow('users', user.$id);
-      _fullNameController.text = userRow.data['fullName'];
-      _usernameController.text = userRow.data['username'];
+      _fullNameController.text = (userRow.data['fullName'] ?? '').toString();
+      _usernameController.text = (userRow.data['username'] ?? '').toString();
       _emailController.text = user.email;
       _phoneController.text = user.phone;
-    } catch (e) {
-      // Handle error
+    } catch (_) {
+      // ignore
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: theme.scaffoldBackgroundColor,
+      appBar: AppBar(
+        title: const Text('Account Information'),
+        centerTitle: true,
+        backgroundColor:
+            theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface,
+        foregroundColor:
+            theme.appBarTheme.foregroundColor ?? theme.colorScheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                _buildHeader(),
-                Expanded(
-                  child: _buildForm(),
-                ),
-                _buildSaveButton(),
-              ],
+          : SafeArea(
+              child: Column(
+                children: [
+                  Expanded(child: _buildForm(context)),
+                  _buildSaveButton(context),
+                ],
+              ),
             ),
     );
   }
 
-  Widget _buildHeader() {
-    return Container(
-      height: 56,
-      padding: const EdgeInsets.fromLTRB(16, 44, 16, 0),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Color(0xFFE5E7EB), width: 1)),
-      ),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: () => Navigator.pop(context),
-            child: const Icon(Icons.arrow_back, size: 20),
-          ),
-          const SizedBox(width: 16),
-          const Text(
-            'Account Information',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildForm() {
+  Widget _buildForm(BuildContext context) {
+    final theme = Theme.of(context);
     return Form(
       key: _formKey,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _buildField('Full Name', _fullNameController),
+          _buildField(context, 'Full Name', _fullNameController),
           const SizedBox(height: 16),
-          _buildUsernameField(),
+          _buildUsernameField(context),
           const SizedBox(height: 16),
-          _buildField('Email', _emailController, enabled: false),
+          _buildField(context, 'Email', _emailController, enabled: false),
           const SizedBox(height: 16),
-          _buildField('Phone Number', _phoneController, required: false),
+          _buildField(context, 'Phone Number', _phoneController,
+              required: false),
+          const SizedBox(height: 8),
+          Text(
+            'This screen follows your current device theme automatically.',
+            style: TextStyle(
+                color: theme.colorScheme.onSurfaceVariant, fontSize: 12),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildField(String label, TextEditingController controller, {bool enabled = true, bool required = true}) {
+  Widget _buildField(
+    BuildContext context,
+    String label,
+    TextEditingController controller, {
+    bool enabled = true,
+    bool required = true,
+  }) {
+    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: theme.colorScheme.onSurface,
+          ),
         ),
         const SizedBox(height: 6),
         TextFormField(
@@ -112,63 +117,77 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
           enabled: enabled,
           decoration: InputDecoration(
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: theme.dividerColor),
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: theme.dividerColor),
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFF29ABE2)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide:
+                  BorderSide(color: theme.colorScheme.primary, width: 1.6),
             ),
             disabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFF3F4F6)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide:
+                  BorderSide(color: theme.dividerColor.withOpacity(0.6)),
             ),
-            fillColor: enabled ? Colors.white : const Color(0xFFF9FAFB),
+            fillColor: enabled
+                ? theme.colorScheme.surface
+                : theme.colorScheme.surfaceContainerHighest,
             filled: true,
           ),
-          validator: required ? (value) {
-            if (value == null || value.isEmpty) {
-              return 'This field is required';
-            }
-            return null;
-          } : null,
+          style: TextStyle(color: theme.colorScheme.onSurface),
+          validator: required
+              ? (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'This field is required';
+                  }
+                  return null;
+                }
+              : null,
           onChanged: (value) => setState(() => _hasChanges = true),
         ),
       ],
     );
   }
 
-  Widget _buildUsernameField() {
+  Widget _buildUsernameField(BuildContext context) {
+    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Username',
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: theme.colorScheme.onSurface,
+          ),
         ),
         const SizedBox(height: 6),
         TextFormField(
           controller: _usernameController,
           decoration: InputDecoration(
             prefixText: '@',
-            prefixStyle: const TextStyle(color: Color(0xFF6B7280)),
+            prefixStyle: TextStyle(color: theme.colorScheme.onSurfaceVariant),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: theme.dividerColor),
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: theme.dividerColor),
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFF29ABE2)),
+              borderRadius: BorderRadius.circular(12),
+              borderSide:
+                  BorderSide(color: theme.colorScheme.primary, width: 1.6),
             ),
           ),
+          style: TextStyle(color: theme.colorScheme.onSurface),
           validator: (value) {
             if (value == null || value.isEmpty) {
               return 'Username is required';
@@ -181,19 +200,25 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
     );
   }
 
-  Widget _buildSaveButton() {
+  Widget _buildSaveButton(BuildContext context) {
+    final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.all(16),
       child: SizedBox(
         width: double.infinity,
-        height: 44,
+        height: 48,
         child: ElevatedButton(
           onPressed: _hasChanges ? _saveChanges : null,
           style: ElevatedButton.styleFrom(
-            backgroundColor: _hasChanges ? const Color(0xFF29ABE2) : const Color(0xFFE5E7EB),
-            foregroundColor: Colors.white,
+            backgroundColor: _hasChanges
+                ? theme.colorScheme.primary
+                : theme.colorScheme.surfaceContainerHighest,
+            foregroundColor: _hasChanges
+                ? theme.colorScheme.onPrimary
+                : theme.colorScheme.onSurfaceVariant,
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
           child: const Text(
             'Save Changes',
@@ -204,30 +229,31 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
     );
   }
 
-  void _saveChanges() async {
-    if (_formKey.currentState!.validate()) {
-      try {
-        final user = await AppwriteService.getAccount();
-        await AppwriteService.updateRow('users', user.$id, {
-          'fullName': _fullNameController.text,
-          'username': _usernameController.text,
-          'phone': _phoneController.text,
-        });
-        setState(() => _hasChanges = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Account information updated successfully!'),
-            backgroundColor: Color(0xFF10B981),
-          ),
-        );
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to update account: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+  Future<void> _saveChanges() async {
+    if (!_formKey.currentState!.validate()) return;
+    try {
+      final user = await AppwriteService.getAccount();
+      await AppwriteService.updateRow('users', user.$id, {
+        'fullName': _fullNameController.text,
+        'username': _usernameController.text,
+        'phone': _phoneController.text,
+      });
+      if (!mounted) return;
+      setState(() => _hasChanges = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Account information updated successfully!'),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Failed to update account. Please try again.'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
     }
   }
 

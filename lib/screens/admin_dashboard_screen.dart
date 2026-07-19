@@ -43,7 +43,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       });
     }
     try {
-      final res = await AppwriteService.listProfiles(limit: 50, cursor: _cursor);
+      final res =
+          await AppwriteService.listProfiles(limit: 50, cursor: _cursor);
       if (!mounted) return;
       setState(() {
         _profiles.addAll(res.rows);
@@ -70,12 +71,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       await AppwriteService.setAdminFlag(userId, value);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Admin ${value ? "granted" : "revoked"} for ${row.data['displayName'] ?? row.data['username'] ?? userId}')),
+        SnackBar(
+            content: Text(
+                'Admin ${value ? "granted" : "revoked"} for ${(row.data['displayName'] as String?)?.trim() ?? ''}')),
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to update admin: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to update admin access. Please try again.'),
+          ),
+        );
       }
       setState(() {
         final idx = _profiles.indexWhere((p) => p.$id == userId);
@@ -124,7 +130,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   final name = (data['displayName'] as String?) ??
                       (data['username'] as String?) ??
                       row.$id;
-                  final isAdmin = (data['isAdmin'] is bool && data['isAdmin'] == true) ||
+                  final isAdmin = (data['isAdmin'] is bool &&
+                          data['isAdmin'] == true) ||
                       (data['isAdmin'] is String &&
                           (data['isAdmin'] as String).toLowerCase() == 'true');
                   return SwitchListTile(

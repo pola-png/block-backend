@@ -7,6 +7,9 @@ class StatusUpdate {
   final int mediaCount;
   final List<String> mediaUrls;
   final String caption;
+  int likes;
+  int views;
+  bool isUploading;
 
   StatusUpdate({
     required this.id,
@@ -17,6 +20,9 @@ class StatusUpdate {
     required this.mediaCount,
     this.mediaUrls = const [],
     this.caption = '',
+    this.likes = 0,
+    this.views = 0,
+    this.isUploading = false,
   });
 }
 
@@ -30,7 +36,7 @@ class StatusMedia {
     required this.id,
     required this.url,
     required this.type,
-    this.duration = const Duration(seconds: 5),
+    this.duration = const Duration(seconds: 20),
   });
 }
 

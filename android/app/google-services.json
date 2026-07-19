@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "387958514335",
+    "project_id": "xapzap-1721",
+    "storage_bucket": "xapzap-1721.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:387958514335:android:a9f0e85a6c35e673dbb8aa",
+        "android_client_info": {
+          "package_name": "badmuscodehive.appldq"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBH3k_kbkXfe118jpD4YoL91ad5-fY90U4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

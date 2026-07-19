@@ -1,16 +1,12 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
-import 'dart:io' show Platform;
-import 'package:video_player/video_player.dart';
-import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../models/post.dart';
-import '../screens/video_detail_screen.dart';
+import '../utils/format_utils.dart';
 import '../services/appwrite_service.dart';
-import '../services/ad_helper.dart';
-import '../services/ad_frequency_service.dart';
-import 'post_card.dart';
+import '../services/global_video_manager.dart';
+import '../services/storage_service.dart';
+import '../screens/profile_screen.dart';
+import '../screens/reel_detail_screen.dart';
+import '../screens/video_detail_screen.dart';
 
 class WatchVideoCard extends StatefulWidget {
   final Post post;
@@ -35,587 +31,517 @@ class WatchVideoCard extends StatefulWidget {
 }
 
 class _WatchVideoCardState extends State<WatchVideoCard> {
-  VideoPlayerController? _controller;
-  Future<void>? _initFuture;
-  bool _isPlaying = false;
-  bool _isMuted = false;
-  bool _countedView = false;
-  bool _showControls = true;
-  Timer? _hideControlsTimer;
-  RewardedAd? _rewardedAd;
-  bool _rewardedLoading = false;
-  NativeAd? _nativeAd;
-  bool _nativeLoaded = false;
-  bool _nativeLoading = false;
-  bool _showNativeOverlay = false;
-  bool _canDismissNative = false;
-  bool _showRewardedOverlay = false;
-  DateTime? _lastTick;
-  bool get _adsEnabled =>
-      widget.enableAds && !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  static const int _displayNameCharacterLimit = 13;
+  String _displayName = '';
+  String? _resolvedAvatarUrl;
+  String? _currentUserId;
 
   @override
   void initState() {
     super.initState();
-    final url = widget.post.videoUrl;
-    if (url != null && url.isNotEmpty) {
-      _controller = VideoPlayerController.networkUrl(Uri.parse(url));
-      _controller!.setLooping(true);
-      _initFuture = _controller!.initialize().then((_) {
-        _controller!.addListener(_onVideoTick);
-        if (!mounted) return;
-        setState(() {});
-      });
-      if (_adsEnabled) {
-        _loadRewarded();
-        _prefetchNative();
-      }
+    if (widget.post.userAvatar.isNotEmpty) {
+      _resolvedAvatarUrl = _resolveAvatarUrlSync(widget.post.userAvatar);
     }
+    _loadAuthorProfile();
+    _loadCurrentUser();
   }
 
   @override
   void dispose() {
-    _hideControlsTimer?.cancel();
-    _controller?.removeListener(_onVideoTick);
-    _controller?.dispose();
-    _rewardedAd?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final thumb = (widget.mediaUrls != null && widget.mediaUrls!.isNotEmpty)
         ? widget.mediaUrls!.first
         : widget.post.thumbnailUrl;
+    final displayName =
+        _displayName.isNotEmpty ? _truncateDisplayName(_displayName) : '';
+    final views = widget.post.views;
+    final gapColor = isDark ? Colors.black : Colors.black.withOpacity(0.03);
 
-    return GestureDetector(
-      onTap: _openDetail,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 6,
-              offset: const Offset(0, 3),
+    return Container(
+      color: gapColor,
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: GestureDetector(
+        onTap: _openDetail,
+        child: Container(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            border: Border(
+              bottom: BorderSide(color: theme.dividerColor, width: 1),
             ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildVideoArea(theme, thumb),
-            // Reuse the same PostCard header + video meta + reactions as detail,
-            // but clamp description to 1 line and route "See more" to the detail screen.
-            PostCard(
-              post: _copyWithoutImage(widget.post),
-              isGuest: widget.isGuest,
-              onGuestAction: widget.onGuestAction,
-              mediaUrls: const <String>[],
-              authorId: widget.authorId,
-              trackImpressions: false,
-              showViewsLabel: true,
-              showVideoMeta: true,
-              videoDescriptionMaxLines: 1,
-              onVideoDescriptionTap: _openDetail,
-              onOpenPost: _openDetail,
-              isDetail: true,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildVideoArea(ThemeData theme, String? thumb) {
-    if (_controller == null || _initFuture == null) {
-      if (thumb != null && thumb.isNotEmpty) {
-        return AspectRatio(
-          aspectRatio: 16 / 9,
-          child: Image.network(
-            thumb,
-            fit: BoxFit.cover,
           ),
-        );
-      }
-      return const SizedBox(
-        height: 200,
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    return FutureBuilder<void>(
-      future: _initFuture,
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done ||
-            !_controller!.value.isInitialized) {
-          if (thumb != null && thumb.isNotEmpty) {
-            return AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Image.network(
-                thumb,
-                fit: BoxFit.cover,
-              ),
-            );
-          }
-          return const SizedBox(
-            height: 200,
-            child: Center(child: CircularProgressIndicator()),
-          );
-        }
-        final aspect = _controller!.value.aspectRatio == 0
-            ? 16 / 9
-            : _controller!.value.aspectRatio;
-        // Center overlay controls in the middle of the video and pin
-        // duration/progress to the bottom.
-        return Stack(
-          alignment: Alignment.center,
-          children: [
-            GestureDetector(
-              onTap: () {
-                setState(() {
-                  _showControls = true;
-                });
-                _scheduleHideControls();
-              },
-              child: AspectRatio(
-                aspectRatio: aspect,
-                child: VideoPlayer(_controller!),
-              ),
-            ),
-            // Top-right speaker icon, auto-hidden.
-            Positioned(
-              top: 8,
-              right: 8,
-              child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 200),
-                child: IgnorePointer(
-                  ignoring: !_showControls,
-                  child: _buildControlButton(
-                    icon: _isMuted ? Icons.volume_off : Icons.volume_up,
-                    onTap: () {
-                      _toggleMute();
-                      _scheduleHideControls();
-                    },
-                  ),
-                ),
-              ),
-            ),
-            // Center controls: back / play-pause / forward, auto-hidden.
-            AnimatedOpacity(
-              opacity: _showControls ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 200),
-              child: IgnorePointer(
-                ignoring: !_showControls,
-                child: Center(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildControlButton(
-                        icon: Icons.replay_10,
-                        onTap: () {
-                          _seekRelative(const Duration(seconds: -10));
-                          _scheduleHideControls();
-                        },
-                      ),
-                      const SizedBox(width: 24),
-                      _buildControlButton(
-                        icon: _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                        onTap: () {
-                          _togglePlay();
-                          _scheduleHideControls();
-                        },
-                      ),
-                      const SizedBox(width: 24),
-                      _buildControlButton(
-                        icon: Icons.forward_10,
-                        onTap: () {
-                          _seekRelative(const Duration(seconds: 10));
-                          _scheduleHideControls();
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            // Bottom duration + progress, auto-hidden and pinned to bottom.
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 200),
-                child: IgnorePointer(
-                  ignoring: !_showControls,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(right: 12, bottom: 4),
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: Text(
-                            _formatDuration(
-                              _controller!.value.position,
-                              _controller!.value.duration,
-                            ),
-                            style: const TextStyle(color: Colors.white, fontSize: 11),
-                          ),
-                        ),
-                      ),
-                      VideoProgressIndicator(
-                        _controller!,
-                        allowScrubbing: true,
-                        padding: const EdgeInsets.only(bottom: 2),
-                        colors: const VideoProgressColors(
-                          playedColor: Colors.white,
-                          bufferedColor: Colors.white54,
-                          backgroundColor: Colors.black26,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            if (_showRewardedOverlay || _showNativeOverlay)
-              Positioned.fill(
-                child: Container(
-                  color: Colors.black.withOpacity(0.7),
-                  child: Center(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final screenH = MediaQuery.of(context).size.height;
-                        final maxH = constraints.maxHeight.isFinite ? constraints.maxHeight : screenH;
-                        final usableH = (maxH - 48).clamp(120.0, maxH);
-                        final adHeight = (usableH * 0.6).clamp(120.0, usableH);
-                        return Material(
-                          color: Colors.black.withOpacity(0.6),
-                          borderRadius: BorderRadius.circular(12),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: SingleChildScrollView(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    height: adHeight,
-                                    width: double.infinity,
-                                    child: _showRewardedOverlay
-                                        ? const Center(
-                                            child: Text(
-                                              'Ad playing...',
-                                              style: TextStyle(color: Colors.white),
-                                            ),
-                                          )
-                                        : (_nativeLoaded && _nativeAd != null
-                                            ? ClipRRect(
-                                                borderRadius: BorderRadius.circular(8),
-                                                child: AdWidget(ad: _nativeAd!),
-                                              )
-                                            : const SizedBox.shrink()),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  const Text(
-                                    'Ad playing... video will resume',
-                                    style: TextStyle(color: Colors.white),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  if (!_showRewardedOverlay)
-                                    ElevatedButton(
-                                      onPressed: _canDismissNative ? _closeNativeOverlay : null,
-                                      child: const Text('Continue'),
-                                    ),
-                                ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildThumbnailArea(theme, thumb),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    GestureDetector(
+                      onTap: _openAuthorProfile,
+                      child: _buildAvatar(theme),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: _openAuthorProfile,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (displayName.isNotEmpty)
+                              Text(
+                                displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: theme.colorScheme.onSurface,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
+                            SizedBox(height: displayName.isNotEmpty ? 4 : 0),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.visibility_outlined,
+                                  size: 16,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  formatCompactCount(views),
+                                  style: TextStyle(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  _formatTimestamp(widget.post.timestamp),
+                                  style: TextStyle(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                        );
-                      },
+                          ],
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        Icons.more_vert,
+                        color: theme.iconTheme.color,
+                      ),
+                      onPressed: _showReportMenu,
+                    ),
+                  ],
+                ),
+              ),
+              if (widget.post.title?.trim().isNotEmpty == true)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                  child: Text(
+                    widget.post.title!.trim(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurface,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      height: 1.25,
                     ),
                   ),
                 ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _loadAuthorProfile() async {
+    final authorId = widget.authorId?.trim();
+    if (authorId == null || authorId.isEmpty) {
+      final fallbackAvatar = _resolveAvatarUrlSync(widget.post.userAvatar);
+      if (!mounted) return;
+      setState(() {
+        _displayName = '';
+        _resolvedAvatarUrl = fallbackAvatar;
+      });
+      return;
+    }
+
+    final cached = AppwriteService.getCachedProfileByUserId(authorId);
+    if (cached != null) {
+      final displayName = (cached.data['displayName'] as String?)?.trim();
+      final avatar = _resolveAvatarUrlSync(
+        ((cached.data['avatarUrl'] as String?)?.trim().isNotEmpty == true)
+            ? (cached.data['avatarUrl'] as String)
+            : widget.post.userAvatar,
+      );
+      _displayName = displayName?.isNotEmpty == true ? displayName! : '';
+      _resolvedAvatarUrl = avatar;
+      return;
+    }
+
+    try {
+      final profile = await AppwriteService.getProfileByUserId(authorId);
+      final displayName = (profile?.data['displayName'] as String?)?.trim();
+      final avatar = _resolveAvatarUrlSync(
+        ((profile?.data['avatarUrl'] as String?)?.trim().isNotEmpty == true)
+            ? (profile!.data['avatarUrl'] as String)
+            : widget.post.userAvatar,
+      );
+      if (!mounted) return;
+      setState(() {
+        _displayName = displayName?.isNotEmpty == true ? displayName! : '';
+        _resolvedAvatarUrl = avatar;
+      });
+    } catch (_) {
+      final fallbackAvatar = _resolveAvatarUrlSync(widget.post.userAvatar);
+      if (!mounted) return;
+      setState(() {
+        _displayName = '';
+        _resolvedAvatarUrl = fallbackAvatar;
+      });
+    }
+  }
+
+  Future<void> _loadCurrentUser() async {
+    final user = await AppwriteService.getCurrentUser();
+    if (!mounted) return;
+    setState(() {
+      _currentUserId = user?.$id;
+    });
+  }
+
+  String? _resolveAvatarUrlSync(String? rawAvatar) {
+    final avatar = rawAvatar?.trim();
+    if (avatar == null || avatar.isEmpty) {
+      return null;
+    }
+    if (avatar.startsWith('http')) {
+      return avatar;
+    }
+    try {
+      return StorageService.getImageDisplayUrlSync(avatar);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Widget _buildAvatar(ThemeData theme) {
+    final avatar = _resolvedAvatarUrl?.trim();
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: theme.colorScheme.surfaceContainerHighest,
+      ),
+      child: ClipOval(
+        child: avatar == null || avatar.isEmpty
+            ? Icon(
+                Icons.person,
+                size: 22,
+                color: theme.colorScheme.onSurfaceVariant,
+              )
+            : Image.network(
+                avatar,
+                fit: BoxFit.cover,
+                width: 40,
+                height: 40,
+                errorBuilder: (context, error, stackTrace) => Icon(
+                  Icons.person,
+                  size: 22,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-          ],
+      ),
+    );
+  }
+
+  Widget _buildThumbnailArea(ThemeData theme, String? thumb) {
+    final aspect = 16 / 9;
+    final image = thumb != null && thumb.isNotEmpty
+        ? Image.network(
+            thumb,
+            fit: BoxFit.cover,
+            width: double.infinity,
+          )
+        : Container(
+            color: theme.colorScheme.surfaceContainerHighest,
+            alignment: Alignment.center,
+            child: const Icon(Icons.play_circle_fill, size: 56),
+          );
+    return AspectRatio(
+      aspectRatio: aspect,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          image,
+          Container(color: Colors.black.withOpacity(0.08)),
+          Center(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.55),
+                shape: BoxShape.circle,
+              ),
+              padding: const EdgeInsets.all(14),
+              child: const Icon(Icons.play_arrow_rounded,
+                  color: Colors.white, size: 42),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openDetail() async {
+    final postType = (widget.post.postType ?? '').toLowerCase();
+    final isReel = postType.contains('reel') || postType.contains('short');
+    if (!isReel) {
+      await GlobalVideoManager.releaseActive();
+    }
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => isReel
+            ? ReelDetailScreen(
+                post: widget.post,
+                authorId: widget.authorId,
+                isGuest: widget.isGuest,
+                onGuestAction: widget.onGuestAction,
+                initialResolvedVideoUrl: widget.post.previewVideoUrl ??
+                    widget.post.videoUrl ??
+                    widget.post.hlsVideoUrl,
+                initialAuthorName: widget.post.username,
+                initialAuthorAvatarUrl: widget.post.userAvatar,
+              )
+            : VideoDetailScreen(
+                post: widget.post,
+                mediaUrls: widget.mediaUrls,
+                authorId: widget.authorId,
+                isGuest: widget.isGuest,
+                onGuestAction: widget.onGuestAction,
+                autoPlay: true,
+              ),
+      ),
+    );
+  }
+
+  void _openAuthorProfile() {
+    final authorId = widget.authorId?.trim();
+    if (authorId == null || authorId.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ProfileScreen(userId: authorId),
+      ),
+    );
+  }
+
+  void _showReportMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (bcontext) {
+        final theme = Theme.of(bcontext);
+        return SafeArea(
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (widget.authorId != null &&
+                    widget.authorId != _currentUserId)
+                  _buildMenuTile(
+                    context: bcontext,
+                    icon: Icons.block_outlined,
+                    label: 'Block user',
+                    destructive: true,
+                    onTap: () {
+                      Navigator.of(bcontext).pop();
+                      _showBlockConfirmation();
+                    },
+                  ),
+                _buildMenuTile(
+                  context: bcontext,
+                  icon: Icons.flag_outlined,
+                  label: 'Report video',
+                  destructive: true,
+                  onTap: () {
+                    Navigator.of(bcontext).pop();
+                    _showReportConfirmation();
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
         );
       },
     );
   }
 
-  Widget _buildControlButton({required IconData icon, required VoidCallback onTap}) {
-    return GestureDetector(
+  Widget _buildMenuTile({
+    required BuildContext context,
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    bool destructive = false,
+  }) {
+    final theme = Theme.of(context);
+    final color = destructive ? Colors.red : theme.colorScheme.onSurface;
+    return ListTile(
+      leading: Icon(icon, color: color),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.black45,
-          shape: BoxShape.circle,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(4.0),
-          child: Icon(icon, color: Colors.white, size: 35),
-        ),
+    );
+  }
+
+  void _showReportConfirmation() {
+    showDialog(
+      context: context,
+      builder: (dcontext) => AlertDialog(
+        title: const Text('Report Video'),
+        content: const Text('Are you sure you want to report this video?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dcontext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final navigator = Navigator.of(dcontext);
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                await AppwriteService.reportPost(
+                  widget.post.id,
+                  'Inappropriate content',
+                );
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Video reported.')),
+                );
+              } catch (_) {
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Failed to report video.')),
+                );
+              }
+            },
+            child: const Text('Report', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
   }
 
-  void _togglePlay() async {
-    if (_controller == null) return;
-    if (_controller!.value.isPlaying) {
-      await _controller!.pause();
-      if (mounted) setState(() => _isPlaying = false);
-    } else {
-      await _playWithGate();
-    }
-  }
-
-  void _toggleMute() {
-    if (_controller == null) return;
-    setState(() {
-      _isMuted = !_isMuted;
-      _controller!.setVolume(_isMuted ? 0.0 : 1.0);
-    });
-  }
-
-  void _incrementView() {
-    if (_countedView) return;
-    _countedView = true;
-    AppwriteService.incrementPostImpressions(widget.post.id, 1);
-  }
-
-  void _openDetail() {
-    Duration? position;
-    bool wasPlaying = false;
-    if (_controller != null && _controller!.value.isInitialized) {
-      position = _controller!.value.position;
-      wasPlaying = _controller!.value.isPlaying;
-      _controller!.pause();
-      _isPlaying = false;
-    }
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => VideoDetailScreen(
-          post: widget.post,
-          mediaUrls: widget.mediaUrls,
-          authorId: widget.authorId,
-          isGuest: widget.isGuest,
-          onGuestAction: widget.onGuestAction,
-          initialPosition: position,
-          autoPlay: wasPlaying,
+  void _showBlockConfirmation() {
+    final targetUserId = widget.authorId?.trim();
+    if (targetUserId == null || targetUserId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This video does not have a blockable author.'),
         ),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (dcontext) => AlertDialog(
+        title: const Text('Block user'),
+        content: const Text('Do you want to block this user?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dcontext).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final navigator = Navigator.of(dcontext);
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                await AppwriteService.blockUser(targetUserId);
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('User blocked.')),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                navigator.pop();
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Failed to block user. Please try again.'),
+                  ),
+                );
+              }
+            },
+            child: const Text('Block', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
   }
 
-  Post _copyWithoutImage(Post original) {
-    return Post(
-      id: original.id,
-      username: original.username,
-      userAvatar: original.userAvatar,
-      content: original.content,
-      textBgColor: original.textBgColor,
-      imageUrl: null,
-      videoUrl: original.videoUrl,
-      kind: original.kind,
-      title: original.title,
-      thumbnailUrl: original.thumbnailUrl,
-      timestamp: original.timestamp,
-      likes: original.likes,
-      comments: original.comments,
-      reposts: original.reposts,
-      impressions: original.impressions,
-      views: original.views,
-      isLiked: original.isLiked,
-      isReposted: original.isReposted,
-      isSaved: original.isSaved,
-    );
+
+
+  String _truncateDisplayName(String value) {
+    final trimmed = value.trim();
+    if (trimmed.length <= _displayNameCharacterLimit) {
+      return trimmed;
+    }
+    return '${trimmed.substring(0, _displayNameCharacterLimit)}...';
   }
 
-  void _seekRelative(Duration offset) {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    final current = _controller!.value.position;
-    final target = current + offset;
-    // Manually clamp because some SDKs don't support Duration.clamp.
-    final total = _controller!.value.duration;
-    Duration clamped;
-    if (target < Duration.zero) {
-      clamped = Duration.zero;
-    } else if (target > total) {
-      clamped = total;
-    } else {
-      clamped = target;
-    }
-    _controller!.seekTo(clamped);
-  }
-
-  void _scheduleHideControls() {
-    _hideControlsTimer?.cancel();
-    if (kIsWeb) {
-      if (!_showControls) {
-        setState(() => _showControls = true);
-      }
-      return;
-    }
-    if (!_isPlaying) {
-      setState(() => _showControls = true);
-      return;
-    }
-    setState(() => _showControls = true);
-    _hideControlsTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      if (_isPlaying) {
-        setState(() => _showControls = false);
-      }
-    });
-  }
-
-  void _onVideoTick() {
-    if (!mounted || _controller == null) return;
+  String _formatTimestamp(DateTime timestamp) {
     final now = DateTime.now();
-    if (_lastTick != null && now.difference(_lastTick!).inMilliseconds < 500) return;
-    _lastTick = now;
-    setState(() {});
-  }
-
-  Future<void> _playWithGate() async {
-    if (_controller == null) return;
-    if (!_adsEnabled) {
-      await _startPlayback();
-      return;
+    final difference = now.difference(timestamp);
+    if (difference.inMinutes < 1) return 'now';
+    if (difference.inHours < 1) return '${difference.inMinutes}m';
+    if (difference.inDays < 1) return '${difference.inHours}h';
+    if (difference.inDays < 7) return '${difference.inDays}d';
+    if (difference.inDays < 30) return '${(difference.inDays / 7).floor()}w';
+    if (difference.inDays < 365) {
+      return '${(difference.inDays / 30).floor()}mo';
     }
-    final needsRewarded = await AdFrequencyService.shouldShowRewarded(widget.post.id);
-    if (needsRewarded) {
-      await _showRewarded();
-    } else {
-      await _showNative();
-    }
-  }
-
-  Future<void> _startPlayback() async {
-    if (_controller == null) return;
-    await _controller!.play();
-    if (!_countedView) {
-      _incrementView();
-    }
-    if (mounted) {
-      setState(() => _isPlaying = true);
-      _scheduleHideControls();
-    }
-  }
-
-  void _loadRewarded() {
-    if (!_adsEnabled || _rewardedLoading || _rewardedAd != null) return;
-    _rewardedLoading = true;
-    RewardedAd.load(
-      adUnitId: AdHelper.rewarded,
-      request: const AdRequest(),
-      rewardedAdLoadCallback: RewardedAdLoadCallback(
-        onAdLoaded: (ad) {
-          _rewardedAd = ad;
-          _rewardedLoading = false;
-        },
-        onAdFailedToLoad: (_) {
-          _rewardedAd = null;
-          _rewardedLoading = false;
-        },
-      ),
-    );
-  }
-
-  Future<void> _showRewarded() async {
-    final ad = _rewardedAd;
-    if (ad == null) {
-      _loadRewarded();
-      await _startPlayback();
-      return;
-    }
-    setState(() => _showRewardedOverlay = true);
-    final completer = Completer<void>();
-    ad.fullScreenContentCallback = FullScreenContentCallback(
-      onAdDismissedFullScreenContent: (ad) {
-        ad.dispose();
-        _rewardedAd = null;
-        _loadRewarded();
-        setState(() => _showRewardedOverlay = false);
-        completer.complete();
-      },
-      onAdFailedToShowFullScreenContent: (ad, _) {
-        ad.dispose();
-        _rewardedAd = null;
-        _loadRewarded();
-        setState(() => _showRewardedOverlay = false);
-        completer.complete();
-      },
-    );
-    ad.show(onUserEarnedReward: (_, reward) {});
-    await completer.future;
-    await AdFrequencyService.markRewarded(widget.post.id);
-    setState(() => _showRewardedOverlay = false);
-    await _startPlayback();
-  }
-
-  void _prefetchNative() {
-    if (!_adsEnabled || !Platform.isAndroid) return;
-    if (_nativeLoading || _nativeAd != null) return;
-    _nativeLoading = true;
-    _nativeLoaded = false;
-    _nativeAd?.dispose();
-    _nativeAd = NativeAd(
-      adUnitId: AdHelper.native,
-      factoryId: 'cardNative',
-      request: const AdRequest(),
-      listener: NativeAdListener(
-        onAdLoaded: (ad) {
-          if (!mounted) return;
-          setState(() {
-            _nativeLoaded = true;
-            _nativeLoading = false;
-          });
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          if (!mounted) return;
-          setState(() {
-            _nativeAd = null;
-            _nativeLoading = false;
-          });
-        },
-      ),
-    )..load();
-  }
-
-  Future<void> _showNative() async {
-    if (!_adsEnabled || !Platform.isAndroid) {
-      await _startPlayback();
-      return;
-    }
-    if (!_nativeLoaded || _nativeAd == null) {
-      await _startPlayback();
-      return;
-    }
-    setState(() {
-      _showNativeOverlay = true;
-      _canDismissNative = true;
-    });
-  }
-
-  void _closeNativeOverlay() {
-    setState(() {
-      _showNativeOverlay = false;
-    });
-    _startPlayback();
-  }
-
-  String _formatDuration(Duration position, Duration total) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    final posMinutes = two(position.inMinutes.remainder(60));
-    final posSeconds = two(position.inSeconds.remainder(60));
-    final totMinutes = two(total.inMinutes.remainder(60));
-    final totSeconds = two(total.inSeconds.remainder(60));
-    return '$posMinutes:$posSeconds / $totMinutes:$totSeconds';
+    return '${(difference.inDays / 365).floor()}y';
   }
 }
+

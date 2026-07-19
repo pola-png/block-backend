@@ -3,7 +3,6 @@ import 'package:appwrite/models.dart' as aw;
 
 import '../services/boost_service.dart';
 import '../services/appwrite_service.dart';
-import '../services/storage_service.dart';
 import '../models/post.dart';
 
 class BoostCenterScreen extends StatefulWidget {
@@ -165,11 +164,10 @@ class _BoostCenterScreenState extends State<BoostCenterScreen>
             if (snapshot.hasData) {
               final p = snapshot.data!;
               final pd = p.data;
-              final kind =
-                  (pd['postType'] ?? pd['type'] ?? pd['category']) as String?;
+              final postType = pd['postType'] as String?;
               final postTitle =
                   (pd['title'] as String?) ?? (pd['content'] as String?) ?? '';
-              title = postTitle.isEmpty ? 'Ad on $kind post' : postTitle;
+              title = postTitle.isEmpty ? 'Ad on $postType post' : postTitle;
               final post = Post(
                 id: p.$id,
                 username: pd['username'] as String? ?? '',

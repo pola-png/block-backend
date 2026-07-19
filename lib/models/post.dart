@@ -5,7 +5,9 @@ class Post {
   final String content;
   final String? imageUrl;
   final String? videoUrl;
-  final String? kind;
+  final String? previewVideoUrl;
+  final String? hlsVideoUrl;
+  final String? postType;
   final String? title;
   final String? thumbnailUrl;
   final DateTime timestamp;
@@ -31,7 +33,9 @@ class Post {
     required this.content,
     this.imageUrl,
     this.videoUrl,
-    this.kind,
+    this.previewVideoUrl,
+    this.hlsVideoUrl,
+    this.postType,
     this.title,
     this.thumbnailUrl,
     required this.timestamp,
@@ -50,6 +54,9 @@ class Post {
     this.isBoosted = false,
     this.activeBoostId,
   });
+
+  String? get preferredVideoUrl =>
+      previewVideoUrl ?? hlsVideoUrl ?? videoUrl;
 
   int get totalEngagement => likes + comments + reposts + impressions + views;
 }

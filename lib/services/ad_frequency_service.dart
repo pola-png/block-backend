@@ -17,6 +17,7 @@ class AdFrequencyService {
   /// Records that a rewarded ad was shown for [videoId].
   static Future<void> markRewarded(String videoId) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_rewardedPrefix + videoId, DateTime.now().millisecondsSinceEpoch);
+    await prefs.setInt(
+        _rewardedPrefix + videoId, DateTime.now().millisecondsSinceEpoch);
   }
 }

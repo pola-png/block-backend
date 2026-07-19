@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:appwrite/models.dart' as aw;
 
 import '../services/appwrite_service.dart';
 import '../models/chat.dart';
+import '../services/profile_preview_cache.dart';
 import 'individual_chat_screen.dart';
 
 class NewChatScreen extends StatefulWidget {
@@ -14,13 +14,18 @@ class NewChatScreen extends StatefulWidget {
 
 class _NewChatScreenState extends State<NewChatScreen> {
   final TextEditingController _searchController = TextEditingController();
-  List<aw.Row> _profiles = <aw.Row>[];
-  List<aw.Row> _filteredProfiles = <aw.Row>[];
+  List<ProfilePreview> _profiles = <ProfilePreview>[];
+  List<ProfilePreview> _filteredProfiles = <ProfilePreview>[];
   String? _currentUserId;
 
   @override
   void initState() {
     super.initState();
+    final cached = ProfilePreviewCache.getAll();
+    if (cached.isNotEmpty) {
+      _profiles = List<ProfilePreview>.from(cached);
+      _filteredProfiles = List<ProfilePreview>.from(cached);
+    }
     _loadProfiles();
     _searchController.addListener(_filterUsers);
   }
@@ -37,17 +42,28 @@ class _NewChatScreenState extends State<NewChatScreen> {
     _currentUserId = me.$id;
 
     try {
-      final aw.RowList list = await AppwriteService.getDocuments(
+      final list = await AppwriteService.getDocuments(
         AppwriteService.profilesCollectionId,
         queries: [],
       );
       if (!mounted) return;
+      final previews = list.rows
+          .where((row) => (row.data['userId'] as String?) != me.$id)
+          .map(
+            (row) => ProfilePreview(
+              userId: (row.data['userId'] as String?) ?? row.$id,
+              displayName: (row.data['displayName'] as String?) ?? '',
+              username: (row.data['username'] as String?) ?? '',
+              avatarUrl: (row.data['avatarUrl'] as String?) ?? '',
+            ),
+          )
+          .where((preview) => preview.userId.isNotEmpty)
+          .toList(growable: false);
       setState(() {
-        _profiles = list.rows
-            .where((row) => (row.data['userId'] as String?) != me.$id)
-            .toList();
-        _filteredProfiles = List<aw.Row>.from(_profiles);
+        _profiles = previews;
+        _filteredProfiles = List<ProfilePreview>.from(previews);
       });
+      ProfilePreviewCache.setAll(previews);
     } catch (_) {}
   }
 
@@ -55,11 +71,8 @@ class _NewChatScreenState extends State<NewChatScreen> {
     final query = _searchController.text.toLowerCase();
     setState(() {
       _filteredProfiles = _profiles.where((row) {
-        final data = row.data;
-        final displayName = (data['displayName'] as String?) ?? '';
-        final username = (data['username'] as String?) ?? '';
-        return displayName.toLowerCase().contains(query) ||
-            username.toLowerCase().contains(query);
+        return row.displayName.toLowerCase().contains(query) ||
+            row.username.toLowerCase().contains(query);
       }).toList();
     });
   }
@@ -90,25 +103,24 @@ class _NewChatScreenState extends State<NewChatScreen> {
               itemCount: _filteredProfiles.length,
               itemBuilder: (context, index) {
                 final row = _filteredProfiles[index];
-                final data = row.data;
-                final userId = data['userId'] as String? ?? row.$id;
-                final displayName = (data['displayName'] as String?) ?? '';
-                final username = (data['username'] as String?) ?? '';
-                final name =
-                    displayName.isNotEmpty ? displayName : (username.isNotEmpty ? username : 'User');
-                final avatar = data['avatarUrl'] as String? ?? '';
+                final userId = row.userId;
+                final displayName = row.displayName;
+                final avatar = row.avatarUrl;
 
                 return ListTile(
                   leading: CircleAvatar(
                     radius: 26,
                     backgroundColor: const Color(0xFF29ABE2),
                     backgroundImage:
-                        avatar.isNotEmpty && avatar.startsWith('http') ? NetworkImage(avatar) : null,
-                    child: avatar.isEmpty ? Text(name.isNotEmpty ? name[0] : '?') : null,
+                        avatar.isNotEmpty && avatar.startsWith('http')
+                            ? NetworkImage(avatar)
+                            : null,
+                    child: avatar.isEmpty && displayName.isNotEmpty
+                        ? Text(displayName[0])
+                        : null,
                   ),
-                  title: Text(name),
-                  subtitle: Text('@$username'),
-                  onTap: () => _startChatWith(userId, name, avatar),
+                  title: Text(displayName),
+                  onTap: () => _startChatWith(userId, displayName, avatar),
                 );
               },
             ),
@@ -118,12 +130,16 @@ class _NewChatScreenState extends State<NewChatScreen> {
     );
   }
 
-  Future<void> _startChatWith(String partnerId, String partnerName, String avatar) async {
-    if (_currentUserId == null) return;
+  Future<void> _startChatWith(
+      String partnerId, String partnerName, String avatar) async {
+    if (_currentUserId == null) {
+      final me = await AppwriteService.getCurrentUser();
+      if (me == null) return;
+      _currentUserId = me.$id;
+    }
     try {
-      final chatId = await AppwriteService.getChatId(_currentUserId!, partnerId);
-      // Build a minimal Chat model so the new chat opens immediately;
-      // ChatScreen realtime subscription will pick up messages as they arrive.
+      final chatId =
+          await AppwriteService.getChatId(_currentUserId!, partnerId);
       final chat = Chat(
         id: chatId,
         partnerId: partnerId,

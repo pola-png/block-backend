@@ -10,6 +10,7 @@ import '../services/avatar_cache.dart';
 /// the HomeScreen can render instantly using FeedCache.
 class FeedPrefetcher {
   static bool _started = false;
+  static int _sessionSeed = 0;
 
   static Future<void> preloadHomeFeeds() async {
     if (_started) return;
@@ -17,11 +18,13 @@ class FeedPrefetcher {
 
     try {
       final user = await AppwriteService.getCurrentUser();
-      final followingIds =
-          user != null ? await AppwriteService.getFollowingUserIds(user.$id) : <String>[];
+      _sessionSeed = DateTime.now().millisecondsSinceEpoch;
+      final followingIds = user != null
+          ? await AppwriteService.getFollowingUserIds(user.$id)
+          : <String>[];
 
       await Future.wait([
-        _preloadForYou(),
+        _preloadForYou(userId: user?.$id),
         if (followingIds.isNotEmpty) _preloadFollowing(followingIds),
       ]);
     } catch (_) {
@@ -29,52 +32,80 @@ class FeedPrefetcher {
     }
   }
 
-  static Future<void> _preloadForYou() async {
+  static Future<void> _preloadForYou({String? userId}) async {
     if (FeedCache.hasForYou) return;
 
-    final aw.RowList docsList =
-        await AppwriteService.fetchPosts(limit: 40);
-      final List<aw.Row> docs = docsList.rows;
+    final feedPage = userId == null
+        ? await AppwriteService.fetchPostsPage(
+            limit: 40,
+            applyFeedRanking: true,
+            sessionSeed: _sessionSeed,
+          )
+        : await AppwriteService.fetchForYouFeedPage(
+            userId: userId,
+            limit: 40,
+            sessionSeed: _sessionSeed,
+          );
+    final List<aw.Row> docs = feedPage.rows;
     if (docs.isEmpty) return;
 
+    if (userId != null && userId.isNotEmpty) {
+      try {
+        await AppwriteService.prefetchUserReactionsAndFollows(
+          userId: userId,
+          postIds: docs.map((d) => d.$id).toList(),
+          authorIds: docs
+              .map((d) => d.data['userId'] as String? ?? '')
+              .toList(),
+        );
+      } catch (_) {}
+    }
     final posts = <Post>[];
     final mediaByPostId = <String, List<String>>{};
     final authorByPostId = <String, String>{};
 
-      for (final d in docs) {
-        final data = d.data;
+    for (final d in docs) {
+      final data = d.data;
       final List<String> rawMedia = data['mediaUrls'] is List
           ? (data['mediaUrls'] as List).map((item) => item.toString()).toList()
           : <String>[];
       authorByPostId[d.$id] = data['userId'] as String? ?? '';
-      final kind = (data['postType'] ?? data['type'] ?? data['category']) as String?;
+      final postType = data['postType'] as String?;
       final title = data['title'] as String?;
       final thumbnailUrl = data['thumbnailUrl'] as String?;
-      final kindLower = (kind ?? '').toLowerCase();
-      final bool isVideoKind = kindLower.contains('video') || kindLower.contains('reel');
+      final postTypeLower = (postType ?? '').toLowerCase();
+      final bool isVideoPost =
+          postTypeLower.contains('video') || postTypeLower.contains('reel');
 
       String? videoUrl;
       String? firstImage;
       List<String> mediaForUi;
 
-      if (isVideoKind && rawMedia.isNotEmpty) {
+      if (isVideoPost && rawMedia.isNotEmpty) {
         final first = rawMedia.first;
         videoUrl = (first.startsWith('http://') || first.startsWith('https://'))
             ? first
-            : await WasabiService.getSignedUrl(first);
+            : await StorageService.getVideoDisplayUrl(first);
         firstImage = thumbnailUrl?.isNotEmpty == true
             ? (thumbnailUrl!.startsWith('http')
-                ? thumbnailUrl
-                : await WasabiService.getSignedUrl(thumbnailUrl))
-            : (rawMedia.length > 1 ? rawMedia[1] : null);
+                ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                : await StorageService.getImageDisplayUrl(thumbnailUrl))
+            : (rawMedia.length > 1
+                ? await StorageService.getImageDisplayUrl(rawMedia[1])
+                : null);
         mediaForUi = firstImage != null ? <String>[firstImage] : <String>[];
       } else {
         firstImage = thumbnailUrl?.isNotEmpty == true
             ? (thumbnailUrl!.startsWith('http')
-                ? thumbnailUrl
-                : await WasabiService.getSignedUrl(thumbnailUrl))
-            : (rawMedia.isNotEmpty ? rawMedia.first : null);
-        mediaForUi = rawMedia;
+                ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                : await StorageService.getImageDisplayUrl(thumbnailUrl))
+            : (rawMedia.isNotEmpty
+                ? await StorageService.getImageDisplayUrl(rawMedia.first)
+                : null);
+        mediaForUi = <String>[];
+        for (final media in rawMedia) {
+          mediaForUi.add(await StorageService.getImageDisplayUrl(media));
+        }
       }
 
       mediaByPostId[d.$id] = mediaForUi;
@@ -85,7 +116,7 @@ class FeedPrefetcher {
       if (userId.isNotEmpty && avatar.isNotEmpty) {
         if (!avatar.startsWith('http')) {
           try {
-            avatar = await WasabiService.getSignedUrl(avatar);
+            avatar = await StorageService.getSignedUrl(avatar);
           } catch (_) {}
         }
         await AvatarCache.setForUserId(userId, avatar);
@@ -99,7 +130,8 @@ class FeedPrefetcher {
           textBgColor: data['textBgColor'] as int?,
           timestamp: DateTime.tryParse(d.$createdAt) ??
               (data['createdAt'] != null
-                  ? DateTime.tryParse(data['createdAt'] as String? ?? '') ?? DateTime.now()
+                  ? DateTime.tryParse(data['createdAt'] as String? ?? '') ??
+                      DateTime.now()
                   : DateTime.now()),
           likes: data['likes'] as int? ?? 0,
           comments: data['comments'] as int? ?? 0,
@@ -108,7 +140,7 @@ class FeedPrefetcher {
           views: data['views'] as int? ?? 0,
           imageUrl: firstImage,
           videoUrl: videoUrl,
-          kind: kind,
+          postType: postType,
           title: title,
           thumbnailUrl: thumbnailUrl,
         ),
@@ -118,17 +150,18 @@ class FeedPrefetcher {
     FeedCache.forYouPosts = posts;
     FeedCache.mediaByPostId = mediaByPostId;
     FeedCache.authorByPostId = authorByPostId;
-    FeedCache.forYouCursor = docs.last.$id;
+    FeedCache.forYouCursor = feedPage.nextCursor;
   }
 
   static Future<void> _preloadFollowing(List<String> followingIds) async {
     if (FeedCache.hasFollowing) return;
 
-    final aw.RowList docsList = await AppwriteService.fetchPostsByUserIds(
+    final feedPage = await AppwriteService.fetchPostsByUserIdsPage(
       followingIds,
       limit: 40,
+      sessionSeed: _sessionSeed,
     );
-    final List<aw.Row> docs = docsList.rows;
+    final List<aw.Row> docs = feedPage.rows;
     if (docs.isEmpty) return;
 
     final posts = <Post>[];
@@ -141,34 +174,42 @@ class FeedPrefetcher {
           ? (data['mediaUrls'] as List).map((item) => item.toString()).toList()
           : <String>[];
       authorByPostId[d.$id] = data['userId'] as String? ?? '';
-      final kind = (data['postType'] ?? data['type'] ?? data['category']) as String?;
+      final postType = data['postType'] as String?;
       final title = data['title'] as String?;
       final thumbnailUrl = data['thumbnailUrl'] as String?;
-      final kindLower = (kind ?? '').toLowerCase();
-      final bool isVideoKind = kindLower.contains('video') || kindLower.contains('reel');
+      final postTypeLower = (postType ?? '').toLowerCase();
+      final bool isVideoPost =
+          postTypeLower.contains('video') || postTypeLower.contains('reel');
 
       String? videoUrl;
       String? firstImage;
       List<String> mediaForUi;
 
-      if (isVideoKind && rawMedia.isNotEmpty) {
+      if (isVideoPost && rawMedia.isNotEmpty) {
         final first = rawMedia.first;
         videoUrl = (first.startsWith('http://') || first.startsWith('https://'))
             ? first
-            : await WasabiService.getSignedUrl(first);
+            : await StorageService.getVideoDisplayUrl(first);
         firstImage = thumbnailUrl?.isNotEmpty == true
             ? (thumbnailUrl!.startsWith('http')
-                ? thumbnailUrl
-                : await WasabiService.getSignedUrl(thumbnailUrl))
-            : (rawMedia.length > 1 ? rawMedia[1] : null);
+                ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                : await StorageService.getImageDisplayUrl(thumbnailUrl))
+            : (rawMedia.length > 1
+                ? await StorageService.getImageDisplayUrl(rawMedia[1])
+                : null);
         mediaForUi = firstImage != null ? <String>[firstImage] : <String>[];
       } else {
         firstImage = thumbnailUrl?.isNotEmpty == true
             ? (thumbnailUrl!.startsWith('http')
-                ? thumbnailUrl
-                : await WasabiService.getSignedUrl(thumbnailUrl))
-            : (rawMedia.isNotEmpty ? rawMedia.first : null);
-        mediaForUi = rawMedia;
+                ? await StorageService.getImageDisplayUrl(thumbnailUrl)
+                : await StorageService.getImageDisplayUrl(thumbnailUrl))
+            : (rawMedia.isNotEmpty
+                ? await StorageService.getImageDisplayUrl(rawMedia.first)
+                : null);
+        mediaForUi = <String>[];
+        for (final media in rawMedia) {
+          mediaForUi.add(await StorageService.getImageDisplayUrl(media));
+        }
       }
 
       mediaByPostId[d.$id] = mediaForUi;
@@ -179,7 +220,7 @@ class FeedPrefetcher {
       if (userId.isNotEmpty && avatar.isNotEmpty) {
         if (!avatar.startsWith('http')) {
           try {
-            avatar = await WasabiService.getSignedUrl(avatar);
+            avatar = await StorageService.getSignedUrl(avatar);
           } catch (_) {}
         }
         await AvatarCache.setForUserId(userId, avatar);
@@ -193,7 +234,8 @@ class FeedPrefetcher {
           textBgColor: data['textBgColor'] as int?,
           timestamp: DateTime.tryParse(d.$createdAt) ??
               (data['createdAt'] != null
-                  ? DateTime.tryParse(data['createdAt'] as String? ?? '') ?? DateTime.now()
+                  ? DateTime.tryParse(data['createdAt'] as String? ?? '') ??
+                      DateTime.now()
                   : DateTime.now()),
           likes: data['likes'] as int? ?? 0,
           comments: data['comments'] as int? ?? 0,
@@ -202,7 +244,7 @@ class FeedPrefetcher {
           views: data['views'] as int? ?? 0,
           imageUrl: firstImage,
           videoUrl: videoUrl,
-          kind: kind,
+          postType: postType,
           title: title,
           thumbnailUrl: thumbnailUrl,
         ),
@@ -212,6 +254,7 @@ class FeedPrefetcher {
     FeedCache.followingPosts = posts;
     FeedCache.mediaByPostId = mediaByPostId;
     FeedCache.authorByPostId = authorByPostId;
-    FeedCache.followingCursor = docs.last.$id;
+    FeedCache.followingCursor = feedPage.nextCursor;
   }
 }
+
