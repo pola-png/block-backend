@@ -37,6 +37,7 @@ import '../widgets/pending_upload_banner.dart';
 import '../widgets/shimmer_loading.dart';
 import '../services/pending_upload_service.dart';
 import 'live_screen.dart';
+import 'news_detail_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -95,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isLoadingWatch = false;
   bool _isLoadingReels = false;
   bool _feedsReadyForFirstPaint = false;
+  String _selectedNewsCategory = 'All';
 
   bool get _enableFeedAds => !kIsWeb && !DeviceModeService.isTv;
   bool get _isTvMode => DeviceModeService.isTv;
@@ -778,41 +780,113 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _buildNewsTab() {
-    return RefreshIndicator(
-      onRefresh: _refreshNews,
-      child: ListView.builder(
-        controller: _newsController,
-        physics: const BouncingScrollPhysics(
-          parent: AlwaysScrollableScrollPhysics(),
+    final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
+
+    final categories = const ['All', 'Technology', 'Science', 'Business', 'General', 'Sports', 'Health'];
+
+    // Filter articles based on selected category
+    final filtered = _newsArticles.where((article) {
+      if (_selectedNewsCategory == 'All') return true;
+      return (article.category ?? '').toLowerCase() == _selectedNewsCategory.toLowerCase();
+    }).toList();
+
+    return Column(
+      children: [
+        // Category Pills Header Row
+        Container(
+          height: 48,
+          margin: const EdgeInsets.symmetric(vertical: 8),
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: categories.length,
+            itemBuilder: (context, index) {
+              final cat = categories[index];
+              final isSelected = _selectedNewsCategory == cat;
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: ChoiceChip(
+                  label: Text(
+                    cat,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: isSelected ? Colors.white : theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  selected: isSelected,
+                  selectedColor: theme.colorScheme.primary,
+                  backgroundColor: theme.colorScheme.surfaceVariant.withOpacity(0.3),
+                  onSelected: (selected) {
+                    if (selected) {
+                      setState(() => _selectedNewsCategory = cat);
+                    }
+                  },
+                ),
+              );
+            },
+          ),
         ),
-        padding: EdgeInsets.zero,
-        itemCount: _newsArticles.isEmpty && !_isLoadingNews
-            ? 1
-            : _newsArticles.length + (_isLoadingNews ? 1 : 0),
-        itemBuilder: (context, index) {
-          if (_newsArticles.isEmpty && !_isLoadingNews) {
-            return const SizedBox(
-              height: 200,
-              child:
-                  Center(child: Text('No news articles yet. Pull to refresh')),
-            );
-          }
-          if (index >= _newsArticles.length) {
-            return _isLoadingNews
-                ? const Padding(
-                    padding: EdgeInsets.all(16),
+        
+        // News articles list
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _refreshNews,
+            child: ListView.builder(
+              controller: _newsController,
+              physics: const BouncingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
+              ),
+              padding: const EdgeInsets.only(bottom: 80),
+              itemCount: filtered.isEmpty && !_isLoadingNews
+                  ? 1
+                  : filtered.length + (_isLoadingNews ? 1 : 0),
+              itemBuilder: (context, index) {
+                if (filtered.isEmpty && !_isLoadingNews) {
+                  return SizedBox(
+                    height: 300,
                     child: Center(
-                      child: CircularProgressIndicator(
-                        color: Color(0xFF1DA1F2),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.newspaper_outlined,
+                            size: 48,
+                            color: theme.colorScheme.onSurfaceVariant.withOpacity(0.4),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'No news articles found in $_selectedNewsCategory',
+                            style: textTheme.bodyLarge?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  )
-                : const SizedBox.shrink();
-          }
-          final article = _newsArticles[index];
-          return _buildNewsCard(article);
-        },
-      ),
+                  );
+                }
+                if (index >= filtered.length) {
+                  return _isLoadingNews
+                      ? const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: Color(0xFF1DA1F2),
+                            ),
+                          ),
+                        )
+                      : const SizedBox.shrink();
+                }
+                final article = filtered[index];
+                final isHero = _selectedNewsCategory == 'All' && index == 0;
+                return _buildNewsCard(article, isHero: isHero);
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -923,7 +997,7 @@ class _HomeScreenState extends State<HomeScreen>
     return '${local.year}/${local.month.toString().padLeft(2, '0')}/${local.day.toString().padLeft(2, '0')}';
   }
 
-  Widget _buildNewsCard(NewsArticle article) {
+  Widget _buildNewsCard(NewsArticle article, {bool isHero = false}) {
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     final onSurfaceVariant = theme.colorScheme.onSurfaceVariant;
@@ -938,131 +1012,148 @@ class _HomeScreenState extends State<HomeScreen>
     final timestampLabel = _formatNewsTimestamp(article.createdAt);
     final primaryTag = article.tags.isNotEmpty ? article.tags.first : null;
 
+    if (isHero) {
+      // Premium Hero card layout (Large banner overlay)
+      return Card(
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+        elevation: 4,
+        shadowColor: theme.colorScheme.shadow.withOpacity(0.08),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => NewsDetailScreen(article: article),
+              ),
+            );
+          },
+          child: AspectRatio(
+            aspectRatio: 16 / 10,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (thumb != null && thumb.isNotEmpty)
+                  Image.network(
+                    thumb,
+                    fit: BoxFit.cover,
+                  )
+                else
+                  Container(
+                    color: theme.colorScheme.primary.withOpacity(0.05),
+                    child: Center(
+                      child: Icon(
+                        Icons.newspaper,
+                        size: 64,
+                        color: theme.colorScheme.primary.withOpacity(0.2),
+                      ),
+                    ),
+                  ),
+                
+                // Deep vignette gradient
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.black87, Colors.black38, Colors.transparent],
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                    ),
+                  ),
+                ),
+
+                // Info overlay
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          if (article.category != null && article.category!.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primary,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                article.category!.toUpperCase(),
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          const SizedBox(width: 8),
+                          Text(
+                            timestampLabel,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        article.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.titleLarge?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          height: 1.2,
+                        ),
+                      ),
+                      if (article.summary != null && article.summary!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: Text(
+                            article.summary!,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: textTheme.bodySmall?.copyWith(
+                              color: Colors.white60,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Standard high-quality list tile layout
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      elevation: 2,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      elevation: 1,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: theme.dividerColor.withOpacity(0.05),
+          width: 1,
+        ),
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () {
-          showModalBottomSheet(
-            context: context,
-            isScrollControlled: true,
-            backgroundColor: theme.colorScheme.surface,
-            builder: (ctx) {
-              return SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          article.title,
-                          style: textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            height: 1.2,
-                          ),
-                        ),
-                        if (article.subtitle != null &&
-                            article.subtitle!.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              article.subtitle!,
-                              style: textTheme.titleSmall?.copyWith(
-                                color: onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            if (article.category != null &&
-                                article.category!.isNotEmpty)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.primary
-                                      .withOpacity(0.08),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Text(
-                                  article.category!,
-                                  style: textTheme.labelSmall?.copyWith(
-                                    color: theme.colorScheme.primary,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            if (article.category != null &&
-                                article.category!.isNotEmpty)
-                              const SizedBox(width: 8),
-                            Text(
-                              '${article.language.toUpperCase()} • $timestampLabel',
-                              style: textTheme.labelSmall?.copyWith(
-                                color: onSurfaceVariant,
-                              ),
-                            ),
-                            const Spacer(),
-                            if (isAi)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.secondary
-                                      .withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Text(
-                                  'AI',
-                                  style: textTheme.labelSmall?.copyWith(
-                                    color: theme.colorScheme.secondary,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        if (thumb != null && thumb.isNotEmpty)
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: AspectRatio(
-                              aspectRatio: 16 / 9,
-                              child: Image.network(
-                                thumb,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) =>
-                                    const SizedBox.shrink(),
-                              ),
-                            ),
-                          ),
-                        if (thumb != null && thumb.isNotEmpty)
-                          const SizedBox(height: 12),
-                        Text(
-                          article.content,
-                          style: textTheme.bodyMedium?.copyWith(
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => NewsDetailScreen(article: article),
+            ),
           );
         },
         child: Padding(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(12),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1077,24 +1168,23 @@ class _HomeScreenState extends State<HomeScreen>
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 8,
-                              vertical: 4,
+                              vertical: 3,
                             ),
                             decoration: BoxDecoration(
-                              color:
-                                  theme.colorScheme.primary.withOpacity(0.08),
-                              borderRadius: BorderRadius.circular(999),
+                              color: theme.colorScheme.primary.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(20),
                             ),
                             child: Text(
                               article.category!,
                               style: textTheme.labelSmall?.copyWith(
                                 color: theme.colorScheme.primary,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
                           ),
-                        const Spacer(),
+                        const SizedBox(width: 8),
                         Text(
-                          '${article.language.toUpperCase()} • $timestampLabel',
+                          timestampLabel,
                           style: textTheme.labelSmall?.copyWith(
                             color: onSurfaceVariant,
                           ),
@@ -1107,8 +1197,9 @@ class _HomeScreenState extends State<HomeScreen>
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.bold,
                         height: 1.2,
+                        color: theme.colorScheme.onSurface,
                       ),
                     ),
                     if (article.summary != null && article.summary!.isNotEmpty)
@@ -1116,7 +1207,7 @@ class _HomeScreenState extends State<HomeScreen>
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
                           article.summary!,
-                          maxLines: 3,
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: textTheme.bodySmall?.copyWith(
                             color: onSurfaceVariant,
@@ -1124,23 +1215,24 @@ class _HomeScreenState extends State<HomeScreen>
                           ),
                         ),
                       ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 8),
                     Row(
                       children: [
                         if (primaryTag != null && primaryTag.isNotEmpty)
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 8,
-                              vertical: 4,
+                              vertical: 3,
                             ),
                             decoration: BoxDecoration(
                               color: theme.colorScheme.surfaceVariant,
-                              borderRadius: BorderRadius.circular(999),
+                              borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
                               '#$primaryTag',
                               style: textTheme.labelSmall?.copyWith(
                                 color: onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
@@ -1149,17 +1241,17 @@ class _HomeScreenState extends State<HomeScreen>
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 8,
-                              vertical: 4,
+                              vertical: 3,
                             ),
                             decoration: BoxDecoration(
-                              color:
-                                  theme.colorScheme.secondary.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(999),
+                              color: theme.colorScheme.secondary.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              'AI generated',
+                              'AI',
                               style: textTheme.labelSmall?.copyWith(
                                 color: theme.colorScheme.secondary,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
                           ),
@@ -1172,13 +1264,13 @@ class _HomeScreenState extends State<HomeScreen>
                 const SizedBox(width: 12),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: AspectRatio(
-                    aspectRatio: 16 / 10,
+                  child: SizedBox(
+                    width: 110,
+                    height: 85,
                     child: Image.network(
                       thumb,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) =>
-                          const SizedBox(width: 0, height: 0),
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                     ),
                   ),
                 ),
