@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../models/chat.dart';
 import '../services/profile_preview_cache.dart';
 import 'individual_chat_screen.dart';
@@ -37,13 +37,13 @@ class _NewChatScreenState extends State<NewChatScreen> {
   }
 
   Future<void> _loadProfiles() async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return;
     _currentUserId = me.$id;
 
     try {
-      final list = await AppwriteService.getDocuments(
-        AppwriteService.profilesCollectionId,
+      final list = await BackendService.getDocuments(
+        BackendService.profilesCollectionId,
         queries: [],
       );
       if (!mounted) return;
@@ -133,13 +133,13 @@ class _NewChatScreenState extends State<NewChatScreen> {
   Future<void> _startChatWith(
       String partnerId, String partnerName, String avatar) async {
     if (_currentUserId == null) {
-      final me = await AppwriteService.getCurrentUser();
+      final me = await BackendService.getCurrentUser();
       if (me == null) return;
       _currentUserId = me.$id;
     }
     try {
       final chatId =
-          await AppwriteService.getChatId(_currentUserId!, partnerId);
+          await BackendService.getChatId(_currentUserId!, partnerId);
       final chat = Chat(
         id: chatId,
         partnerId: partnerId,

@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
 
 import '../models/chat.dart';
 import '../models/app_notification.dart';
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import 'individual_chat_screen.dart';
 import 'live_screen.dart';
@@ -61,7 +61,7 @@ class _NotificationLandingScreenState extends State<NotificationLandingScreen> {
     final payload = widget.payload;
     final notificationId = _stringValue(payload['notificationId']);
     if (notificationId.isNotEmpty) {
-      unawaited(AppwriteService.markNotificationAsRead(notificationId));
+      unawaited(BackendService.markNotificationAsRead(notificationId));
     }
     final type = _stringValue(payload['type']).toLowerCase();
     final actionUrl = _stringValue(payload['actionUrl']);
@@ -98,8 +98,8 @@ class _NotificationLandingScreenState extends State<NotificationLandingScreen> {
     }
 
     try {
-      final row = await AppwriteService.getRow(
-          AppwriteService.postsCollectionId, postId);
+      final row = await BackendService.getRow(
+          BackendService.postsCollectionId, postId);
       final mapped = await _mapRowToPost(row);
       if (!mounted) return;
       final postType = (mapped.$1.postType ?? '').toLowerCase();
@@ -160,9 +160,9 @@ class _NotificationLandingScreenState extends State<NotificationLandingScreen> {
 
     try {
       final chatRow =
-          await AppwriteService.getRow(AppwriteService.chatsCollectionId, chatId);
+          await BackendService.getRow(BackendService.chatsCollectionId, chatId);
       final memberIds = _memberIdsFromRow(chatRow);
-      final currentUser = await AppwriteService.getCurrentUser();
+      final currentUser = await BackendService.getCurrentUser();
       final currentUserId = currentUser?.$id ?? '';
       final partnerId = memberIds.firstWhere(
         (id) => id != currentUserId,
@@ -171,7 +171,7 @@ class _NotificationLandingScreenState extends State<NotificationLandingScreen> {
       if (partnerId.isEmpty) {
         throw StateError('Chat partner could not be resolved.');
       }
-      final profile = await AppwriteService.getProfileByUserId(partnerId);
+      final profile = await BackendService.getProfileByUserId(partnerId);
       final pdata = profile?.data ?? <String, dynamic>{};
       final partnerName =
           (pdata['displayName'] as String?)?.trim().isNotEmpty == true

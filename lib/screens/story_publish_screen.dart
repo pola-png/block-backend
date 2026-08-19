@@ -1,14 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:appwrite/appwrite.dart' show ID;
+import 'package:xapzap/models/database_models.dart' show ID;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 
 import '../models/status.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/story_manager.dart';
 import '../services/storage_service.dart';
 
@@ -690,12 +690,12 @@ class _StoryPublishScreenState extends State<StoryPublishScreen> {
     required String mediaPath,
   }) async {
     try {
-      final me = await AppwriteService.getCurrentUser();
+      final me = await BackendService.getCurrentUser();
       if (me == null) {
         StoryManager.setMyUploading(false);
         return;
       }
-      final profile = await AppwriteService.getProfileByUserId(me.$id);
+      final profile = await BackendService.getProfileByUserId(me.$id);
       final avatar = profile?.data['avatarUrl'] as String? ?? '';
       final displayName =
           (profile?.data['displayName'] as String?)?.trim() ?? '';
@@ -722,7 +722,7 @@ class _StoryPublishScreenState extends State<StoryPublishScreen> {
         ),
       );
       StoryManager.setMyUploading(false);
-      await AppwriteService.createStatus(
+      await BackendService.createStatus(
         statusId,
         me.$id,
         storedPath,

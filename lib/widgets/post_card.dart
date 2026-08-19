@@ -14,7 +14,7 @@ import '../screens/comment_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/edit_post_screen.dart';
 import '../screens/episode_editor_screen.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../services/avatar_cache.dart';
 import '../screens/hashtag_feed_screen.dart';
@@ -120,7 +120,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     final batch = Map<String, int>.from(_pendingImpressions);
     _pendingImpressions.clear();
     for (final entry in batch.entries) {
-      unawaited(AppwriteService.incrementPostImpressions(entry.key, entry.value));
+      unawaited(BackendService.incrementPostImpressions(entry.key, entry.value));
     }
   }
 
@@ -140,12 +140,12 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     _repostCount = widget.post.reposts;
     _impressionCount = widget.post.impressions;
 
-    final me = AppwriteService.getCurrentUserSync();
+    final me = BackendService.getCurrentUserSync();
     if (me != null) {
       _currentUserId = me.$id;
-      final cachedLiked = AppwriteService.isPostLikedBySync(widget.post.id);
-      final cachedSaved = AppwriteService.isPostSavedBySync(widget.post.id);
-      final cachedReposted = AppwriteService.isPostRepostedBySync(widget.post.id);
+      final cachedLiked = BackendService.isPostLikedBySync(widget.post.id);
+      final cachedSaved = BackendService.isPostSavedBySync(widget.post.id);
+      final cachedReposted = BackendService.isPostRepostedBySync(widget.post.id);
       if (cachedLiked != null) {
         _isLiked = cachedLiked;
         _likeCache[widget.post.id] = _isLiked;
@@ -155,7 +155,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
 
       if (widget.authorId != null && widget.authorId != me.$id) {
         final cachedFollowing =
-            AppwriteService.isFollowingSync(me.$id, widget.authorId!);
+            BackendService.isFollowingSync(me.$id, widget.authorId!);
         if (cachedFollowing != null) {
           _isFollowing = cachedFollowing;
           _followLoaded = true;
@@ -288,7 +288,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
         _avatarUrl = cachedAvatar;
       }
 
-      final cachedProfile = AppwriteService.getCachedProfileByUserId(userId);
+      final cachedProfile = BackendService.getCachedProfileByUserId(userId);
       if (cachedProfile != null) {
         final dn = (cachedProfile.data['displayName'] as String?)?.trim();
         if (dn != null && dn.isNotEmpty) {
@@ -438,52 +438,55 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Wrap(
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 8,
-                        runSpacing: 2,
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            displayName,
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: theme.brightness == Brightness.dark
-                                  ? Colors.white
-                                  : Colors.black,
-                            ),
-                          ),
-                          if (_isVerified || _isAdmin)
-                            VerificationBadge(
-                              size: 16,
-                              isPremium: _isAdmin,
-                            ),
-                          if (widget.showViewsLabel)
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                displayName,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.brightness == Brightness.dark
+                                      ? Colors.white
+                                      : Colors.black,
+                                ),
+                              ),
+                              if (_isVerified || _isAdmin) ...[
+                                const SizedBox(width: 6),
+                                VerificationBadge(
+                                  size: 14,
+                                  isPremium: _isAdmin,
+                                ),
+                              ],
+                              if (widget.showViewsLabel) ...[
+                                const SizedBox(width: 8),
                                 Icon(
                                   LucideIcons.eye,
-                                  size: 14,
+                                  size: 12,
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),
                                 const SizedBox(width: 4),
                                 Text(
                                   _formatCompactCount(widget.post.views),
                                   style: TextStyle(
-                                    fontSize: 12,
+                                    fontSize: 11,
                                     color: theme.colorScheme.onSurfaceVariant,
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],
-                            ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
                           Text(
                             _formatTimestamp(widget.post.timestamp),
                             style: TextStyle(
                               fontSize: 13,
                               color: theme.colorScheme.onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
                         ],
@@ -568,7 +571,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     if ((userId == null || userId.isEmpty) && widget.post.username.isNotEmpty) {
       final handle = widget.post.username.replaceAll('@', '').trim();
       if (handle.isNotEmpty) {
-        final prof = await AppwriteService.getProfileByUsername(handle);
+        final prof = await BackendService.getProfileByUsername(handle);
         if (prof != null) {
           userId = prof.data['userId'] as String? ?? prof.$id;
         }
@@ -582,7 +585,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
 
     // Check against the live logged-in user so we always
     // recognize our own profile correctly.
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     final isMe = me != null && userId == me.$id;
 
     if (!mounted) return;
@@ -598,7 +601,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     if (widget.isGuest) return;
     Map<String, dynamic> meta = const <String, dynamic>{'isEpisode': false};
     try {
-      meta = await AppwriteService.fetchEpisodeMetadata(widget.post.id);
+      meta = await BackendService.fetchEpisodeMetadata(widget.post.id);
     } catch (_) {}
     if (!mounted) return;
     final updated = await Navigator.of(context).push<bool>(
@@ -635,9 +638,9 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
             height: 1.25,
           )
         : const TextStyle(
-            fontSize: 17,
-            fontWeight: FontWeight.w500,
-            height: 1.85,
+            fontSize: 15,
+            fontWeight: FontWeight.w400,
+            height: 1.45,
           );
     final bool bgIsLight = bgColor?.computeLuminance() != null &&
         (bgColor!.computeLuminance() > 0.55);
@@ -1453,7 +1456,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
           setState(() {
             _shareCount++;
           });
-          AppwriteService.incrementPostShares(widget.post.id, 1);
+          BackendService.incrementPostShares(widget.post.id, 1);
           _sharePost();
         },
         child: Transform(
@@ -1503,9 +1506,9 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     setState(() => _isFollowing = targetFollow);
     try {
       if (targetFollow) {
-        await AppwriteService.followUser(widget.authorId!);
+        await BackendService.followUser(widget.authorId!);
       } else {
-        await AppwriteService.unfollowUser(widget.authorId!);
+        await BackendService.unfollowUser(widget.authorId!);
       }
     } catch (_) {
       if (mounted) {
@@ -1529,9 +1532,9 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     });
     try {
       if (targetLike) {
-        await AppwriteService.likePost(widget.post.id);
+        await BackendService.likePost(widget.post.id);
       } else {
-        await AppwriteService.unlikePost(widget.post.id);
+        await BackendService.unlikePost(widget.post.id);
       }
     } catch (_) {
       // Revert UI if the backend update fails.
@@ -1557,7 +1560,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
       if (_repostCount < 0) _repostCount = 0;
     });
     try {
-      await AppwriteService.repostPost(widget.post.id);
+      await BackendService.repostPost(widget.post.id);
       if (!mounted) return;
       final messenger = ScaffoldMessenger.of(context);
       messenger.showSnackBar(
@@ -1583,9 +1586,9 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     setState(() => _isSaved = targetSave);
     try {
       if (targetSave) {
-        await AppwriteService.savePost(widget.post.id);
+        await BackendService.savePost(widget.post.id);
       } else {
-        await AppwriteService.unsavePost(widget.post.id);
+        await BackendService.unsavePost(widget.post.id);
       }
     } catch (_) {
       if (mounted) {
@@ -1618,7 +1621,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
   Future<void> _handleMentionTap(String username) async {
     final handle = username.replaceAll('@', '').trim();
     if (handle.isEmpty) return;
-    final prof = await AppwriteService.getProfileByUsername(handle);
+    final prof = await BackendService.getProfileByUsername(handle);
     if (!mounted) return;
     if (prof == null) {
       ScaffoldMessenger.of(
@@ -1728,7 +1731,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
                       );
                       if (confirm != true) return;
                       try {
-                        await AppwriteService.deletePost(widget.post.id);
+                        await BackendService.deletePost(widget.post.id);
                         if (!mounted) return;
                         messenger.showSnackBar(
                           const SnackBar(content: Text('Post deleted')),
@@ -1812,7 +1815,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
               final navigator = Navigator.of(dcontext);
               final scaffoldMessenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.reportPost(
+                await BackendService.reportPost(
                   widget.post.id,
                   'Inappropriate content',
                 );
@@ -1860,7 +1863,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
               final navigator = Navigator.of(dcontext);
               final scaffoldMessenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.blockUser(targetUserId);
+                await BackendService.blockUser(targetUserId);
                 if (!mounted) return;
                 navigator.pop();
                 scaffoldMessenger.showSnackBar(

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/avatar_cache.dart';
 import '../services/auth_wrapper.dart';
 import 'legal_page_widgets.dart';
@@ -24,7 +24,7 @@ class _AccountDeletionScreenState extends State<AccountDeletionScreen> {
   }
 
   Future<void> _loadAuthState() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     setState(() => _showDeleteAction = user != null);
   }
@@ -63,7 +63,7 @@ class _AccountDeletionScreenState extends State<AccountDeletionScreen> {
     setState(() => _isDeleting = true);
 
     try {
-      await AppwriteService.deleteCurrentAccount();
+      await BackendService.deleteCurrentAccount();
       await AvatarCache.clearAll();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(

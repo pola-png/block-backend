@@ -2,7 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/status.dart';
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 import 'avatar_cache.dart';
 
 /// Central story cache so HomeScreen and the story viewer stay in sync.
@@ -40,11 +40,11 @@ class StoryManager {
     if (stories.value.isNotEmpty) return;
 
     // Synchronously populate user placeholder with cached avatar and display name on startup
-    final me = AppwriteService.getCurrentUserSync();
+    final me = BackendService.getCurrentUserSync();
     if (me != null) {
       final cachedAvatar = AvatarCache.getForUserId(me.$id);
       String displayName = 'You';
-      final cachedProfile = AppwriteService.getCachedProfileByUserId(me.$id);
+      final cachedProfile = BackendService.getCachedProfileByUserId(me.$id);
       if (cachedProfile != null) {
         displayName = (cachedProfile.data['displayName'] as String?)?.trim() ?? 'You';
       }
@@ -135,8 +135,8 @@ class StoryManager {
   static Future<void> loadFromServer({int limit = 40}) async {
     try {
       await _ensureViewedLoaded();
-      await AppwriteService.cleanupExpiredStatuses();
-      final values = await AppwriteService.fetchStatuses(limit: limit);
+      await BackendService.cleanupExpiredStatuses();
+      final values = await BackendService.fetchStatuses(limit: limit);
       _serverStatuses
         ..clear()
         ..addAll(values.where((status) {

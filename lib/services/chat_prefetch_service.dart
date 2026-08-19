@@ -1,5 +1,5 @@
 import '../models/chat.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/chat_message_cache.dart';
 import '../services/crypto_service.dart';
 
@@ -14,10 +14,10 @@ class ChatPrefetchService {
     _running = true;
 
     try {
-      final me = await AppwriteService.getCurrentUser();
+      final me = await BackendService.getCurrentUser();
       if (me == null) return;
 
-      final chats = await AppwriteService.fetchChatsForUser(me.$id);
+      final chats = await BackendService.fetchChatsForUser(me.$id);
       final rows = chats.rows.take(chatLimit).toList(growable: false);
       for (final row in rows) {
         await _preloadChatMessages(
@@ -59,7 +59,7 @@ class ChatPrefetchService {
       final messages = <Message>[];
       String? cursorId;
       while (true) {
-        final page = await AppwriteService.fetchMessagesForChat(
+        final page = await BackendService.fetchMessagesForChat(
           chatId,
           limit: limit,
           cursorId: cursorId,

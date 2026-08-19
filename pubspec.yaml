@@ -1,7 +1,7 @@
 name: xapzap
 description: "XapZap. A cross-platform social media application."
 publish_to: 'none'
-version: 30.0.0+31
+version: 30.0.1+35
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -19,7 +19,6 @@ dependencies:
   video_player: ^2.8.6
   cached_network_image: ^3.3.1
   flutter_cache_manager: ^3.4.1
-  appwrite: ^20.3.0
   connectivity_plus: ^6.0.3
   minio: ^3.5.8
   path: ^1.9.0
@@ -40,12 +39,17 @@ dependencies:
   firebase_messaging: ^15.2.5
   flutter_local_notifications: ^18.0.1
   google_mobile_ads: ^5.1.0
+  supabase_flutter: ^2.8.0
+  in_app_review: ^2.0.9
+  in_app_purchase: ^3.2.0
   flutter_native_splash: ^2.4.1
   flutterwave_standard: ^1.0.7
+  webview_flutter: ^4.13.0
   url_launcher: ^6.3.0
   permission_handler_windows: ^0.2.1
   in_app_update: ^4.2.5
   package_info_plus: ^9.0.1
+  youtube_player_flutter: ^10.0.1
 
 dev_dependencies:
   flutter_test:

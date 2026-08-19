@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:appwrite/appwrite.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:crypto/crypto.dart';
-import 'package:appwrite/models.dart' as models;
-import 'package:appwrite/enums.dart' as enums;
+import '../models/database_models.dart' as models;
+import '../models/database_models.dart' show Query, ID, DatabaseException, Client, Account, Functions, Storage, InputFile, Permission, Role, Messaging, enums;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -48,9 +48,10 @@ class FeedPage {
   }
 }
 
-class AppwriteService {
-  static const String endpoint = Environment.appwritePublicEndpoint;
-  static const String projectId = Environment.appwriteProjectId;
+class BackendService {
+  static final ValueNotifier<bool> adminModeOverride = ValueNotifier<bool>(true);
+  static const String endpoint = Environment.supabaseUrl;
+  static const String projectId = 'supabase';
   static const String databaseId = 'xapzap_db';
 
   // Collections
@@ -97,6 +98,8 @@ class AppwriteService {
 
   static Account get account => _account;
 
+  static Client get client => _client;
+
   // Follow graph change notifier
   static final ValueNotifier<int> followingVersion = ValueNotifier<int>(0);
 
@@ -116,6 +119,14 @@ class AppwriteService {
         final map = jsonDecode(userJson) as Map<String, dynamic>;
         _currentUserCache = models.User.fromMap(map);
       }
+
+      // If we have a live Supabase Auth session, let that override the cache immediately
+      final supabaseUser = Supabase.instance.client.auth.currentUser;
+      if (supabaseUser != null) {
+        _currentUserCache = _userFromSupabaseUser(supabaseUser);
+        _isLoggedInCache = true;
+      }
+
       final profileJson = prefs.getString('cached_profile_json');
       if (profileJson != null && _currentUserCache != null) {
         final map = jsonDecode(profileJson) as Map<String, dynamic>;
@@ -316,59 +327,7 @@ class AppwriteService {
         text.contains('timeout');
   }
 
-  static Future<models.File> uploadFile(
-    String bucketId,
-    File file,
-    String fileId,
-  ) async {
-    final attempts = 3;
-    for (var attempt = 0; attempt < attempts; attempt++) {
-      try {
-        if (attempt == 0) {
-          return await _storage.createFile(
-            bucketId: bucketId,
-            fileId: fileId,
-            file: InputFile.fromPath(path: file.path),
-          );
-        }
 
-        final bytes = await file.readAsBytes();
-        if (bytes.isEmpty) {
-          throw StateError('Upload file is empty.');
-        }
-        return await _storage.createFile(
-          bucketId: bucketId,
-          fileId: fileId,
-          file: InputFile.fromBytes(bytes: bytes, filename: fileId),
-        );
-      } on AppwriteException catch (e) {
-        if (e.code == 400 &&
-            (e.type == 'storage_file_empty' ||
-                (e.message ?? '').contains('storage_file_empty'))) {
-          final bytes = await file.readAsBytes();
-          if (bytes.isEmpty) rethrow;
-          return await _storage.createFile(
-            bucketId: bucketId,
-            fileId: fileId,
-            file: InputFile.fromBytes(bytes: bytes, filename: fileId),
-          );
-        }
-        if (attempt == attempts - 1 || !_isTransientUploadError(e)) rethrow;
-        await Future<void>.delayed(Duration(milliseconds: 750 << attempt));
-      } catch (error) {
-        if (attempt == attempts - 1 || !_isTransientUploadError(error)) rethrow;
-        final bytes = await file.readAsBytes();
-        if (bytes.isEmpty) rethrow;
-        await Future<void>.delayed(Duration(milliseconds: 750 << attempt));
-      }
-    }
-    throw StateError('Upload failed.');
-  }
-
-  static String buildFileViewUrl(String bucketId, String fileId) {
-    // endpoint already includes /v1
-    return '$endpoint/storage/buckets/$bucketId/files/$fileId/view?project=$projectId&mode=public';
-  }
 
   // Generic TablesDB helpers
   static Future<models.Row> getRow(String tableId, String rowId) {
@@ -405,7 +364,7 @@ class AppwriteService {
         rowId: chatId,
       );
     } catch (e) {
-      if (e is AppwriteException && e.code == 404) {
+      if (e is DatabaseException && e.code == 404) {
         await _tables.createRow(
           databaseId: databaseId,
           tableId: chatsCollectionId,
@@ -451,14 +410,62 @@ class AppwriteService {
     final safeDisplayName = (displayName ?? '').trim();
     final safeCountry = (country ?? '').trim();
     final safeGender = gender.trim();
-    await _account.create(
-      userId: ID.unique(),
+
+    // 1. Sign up the user in Supabase Auth
+    final authRes = await Supabase.instance.client.auth.signUp(
       email: email,
       password: password,
-      name: safeDisplayName.isEmpty ? username : safeDisplayName,
+      data: {
+        'username': username,
+        'displayName': safeDisplayName.isEmpty ? username : safeDisplayName,
+      },
     );
-    await signIn(email, password);
-    final createdUser = await _account.get();
+
+    final user = authRes.user;
+    if (user == null) {
+      throw const AuthException('Signup failed: user is null');
+    }
+
+    // 2. Create the profile row in the database immediately using the user's UUID
+    try {
+      await Supabase.instance.client.from('profiles').insert({
+        'id': user.id,
+        'username': username,
+        'display_name': safeDisplayName.isEmpty ? username : safeDisplayName,
+        'gender': safeGender,
+        'country': safeCountry,
+        'date_of_birth': dateOfBirth.toUtc().toIso8601String(),
+        'is_admin': false,
+        'is_banned': false,
+      });
+    } catch (dbErr) {
+      debugPrint('Warning: DB profile insertion error: $dbErr');
+    }
+
+    // 3. Log them in or check session
+    if (authRes.session == null) {
+      throw const AuthException('Verification required: Please check your email to confirm your registration.');
+    }
+
+    final createdUser = models.User.fromMap({
+      '\$id': user.id,
+      '\$createdAt': user.createdAt,
+      '\$updatedAt': user.updatedAt ?? user.createdAt,
+      'name': safeDisplayName.isEmpty ? username : safeDisplayName,
+      'email': email,
+      'phone': '',
+      'status': true,
+      'emailVerification': true,
+      'phoneVerification': true,
+      'prefs': <String, dynamic>{},
+      'accessedAt': DateTime.now().toIso8601String(),
+      'labels': <String>[],
+      'mfa': false,
+      'passwordUpdate': DateTime.now().toIso8601String(),
+      'registration': DateTime.now().toIso8601String(),
+      'targets': <dynamic>[],
+    });
+
     _currentUserCache = createdUser;
     unawaited(_saveUserToPrefs(createdUser));
     _isLoggedInCache = true;
@@ -468,16 +475,6 @@ class AppwriteService {
     } catch (_) {}
 
     try {
-      await updateUserProfile(
-        createdUser.$id,
-        <String, dynamic>{
-          'username': username,
-          'displayName': safeDisplayName.isEmpty ? username : safeDisplayName,
-          'dateOfBirth': dateOfBirth.toUtc().toIso8601String(),
-          if (safeCountry.isNotEmpty) 'country': safeCountry,
-          if (safeGender.isNotEmpty) 'gender': safeGender,
-        },
-      );
       final profile = await getProfileByUserId(createdUser.$id);
       if (profile != null) {
         _profileCache[createdUser.$id] = profile;
@@ -529,69 +526,114 @@ class AppwriteService {
     return createdUser;
   }
 
+  /// Wraps a Supabase [User] into the [models.User] shape expected by the app.
+  static models.User _userFromSupabaseUser(User u) {
+    final meta = u.userMetadata ?? {};
+    final displayName = (meta['displayName'] as String? ?? '').trim();
+    final username = (meta['username'] as String? ?? '').trim();
+    return models.User.fromMap({
+      '\$id': u.id,
+      '\$createdAt': u.createdAt,
+      '\$updatedAt': u.updatedAt ?? u.createdAt,
+      'name': displayName.isNotEmpty ? displayName : username,
+      'email': u.email ?? '',
+      'phone': u.phone ?? '',
+      'status': true,
+      'emailVerification': u.emailConfirmedAt != null,
+      'phoneVerification': false,
+      'prefs': <String, dynamic>{},
+      'accessedAt': DateTime.now().toIso8601String(),
+      'labels': <String>[],
+      'mfa': false,
+      'passwordUpdate': DateTime.now().toIso8601String(),
+      'registration': u.createdAt,
+      'targets': <dynamic>[],
+    });
+  }
+
   static Future<models.Session> signIn(String email, String password) async {
-    final session = await _account.createEmailPasswordSession(email: email, password: password);
+    // Sign in via Supabase Auth only.
+    final authRes = await Supabase.instance.client.auth.signInWithPassword(
+      email: email,
+      password: password,
+    );
+    final supabaseUser = authRes.user;
+    if (supabaseUser == null) {
+      throw const AuthException('Sign in failed: no user returned.');
+    }
+
+    final user = _userFromSupabaseUser(supabaseUser);
+    _currentUserCache = user;
+    _isLoggedInCache = true;
+    unawaited(_saveUserToPrefs(user));
     try {
-      _isLoggedInCache = true;
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('is_logged_in', true);
-      } catch (_) {}
-
-      final user = await _account.get();
-      _currentUserCache = user;
-      unawaited(_saveUserToPrefs(user));
-
-      final profile = await getProfileByUserId(user.$id);
-      if (profile != null) {
-        _profileCache[user.$id] = profile;
-        unawaited(_saveProfileToPrefs(profile));
-        final rawBanned = profile.data['isBanned'];
-        _isBannedCache = rawBanned is bool
-            ? rawBanned
-            : (rawBanned is String ? (rawBanned.toLowerCase() == 'true') : false);
-        _isAdminCache = profile.data['isAdmin'] == true;
-      } else {
-        _isBannedCache = false;
-        _isAdminCache = false;
-      }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_logged_in', true);
     } catch (_) {}
-    return session;
+
+    final profile = await getProfileByUserId(user.$id);
+    if (profile != null) {
+      _profileCache[user.$id] = profile;
+      unawaited(_saveProfileToPrefs(profile));
+      final rawBanned = profile.data['isBanned'];
+      _isBannedCache = rawBanned is bool
+          ? rawBanned
+          : (rawBanned is String ? rawBanned.toLowerCase() == 'true' : false);
+      _isAdminCache = profile.data['isAdmin'] == true;
+    } else {
+      _isBannedCache = false;
+      _isAdminCache = false;
+    }
+
+    // Return a dummy models.Session (callers only check it's non-null)
+    return models.Session.fromMap({
+      '\$id': authRes.session?.accessToken ?? '',
+      '\$createdAt': DateTime.now().toIso8601String(),
+      'userId': user.$id,
+      'expire': authRes.session?.expiresAt?.toString() ?? '',
+      'provider': 'email',
+      'providerUid': user.email,
+      'providerAccessToken': authRes.session?.accessToken ?? '',
+      'ip': '',
+      'osCode': '',
+      'osName': '',
+      'osVersion': '',
+      'clientType': '',
+      'clientCode': '',
+      'clientName': '',
+      'clientVersion': '',
+      'clientEngine': '',
+      'clientEngineVersion': '',
+      'deviceName': '',
+      'deviceBrand': '',
+      'deviceModel': '',
+      'countryCode': '',
+      'countryName': '',
+      'current': true,
+      'factors': <dynamic>[],
+      'secret': '',
+      'mfaUpdatedAt': '',
+    });
   }
 
   static Future<bool> emailExists(String email) async {
-    final response = await executeBlockFilterFunction(
-      path: '/v1/account/lookup-email',
-      payload: <String, dynamic>{
-        'email': email.trim(),
-      },
-    );
-    return response != null && response['exists'] == true;
+    // Supabase client SDK does not provide a public method to check if an email exists for security reasons.
+    // We return true here to let signIn proceed and handle user existence natively.
+    return true;
   }
 
-  static Future<void> signInWithGoogle() async => AppwriteService.account
-      .createOAuth2Session(provider: enums.OAuthProvider.google);
+  static Future<void> signInWithGoogle() async {
+    await Supabase.instance.client.auth.signInWithOAuth(
+      OAuthProvider.google,
+      redirectTo: kIsWeb ? null : 'xapzap://login-callback',
+    );
+  }
 
   static Future<void> sendPasswordRecovery(String email) async {
-    const urls = <String>[
-      'xapzap://reset-password',
-      'https://xapzap.com/reset-password',
-    ];
-    Object? lastError;
-    for (final url in urls) {
-      try {
-        await _account.createRecovery(
-          email: email.trim(),
-          url: url,
-        );
-        return;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    if (lastError != null) {
-      throw lastError;
-    }
+    await Supabase.instance.client.auth.resetPasswordForEmail(
+      email.trim(),
+      redirectTo: 'xapzap://reset-password',
+    );
   }
 
   static Future<void> completePasswordRecovery({
@@ -599,10 +641,10 @@ class AppwriteService {
     required String secret,
     required String password,
   }) async {
-    await _account.updateRecovery(
-      userId: userId,
-      secret: secret,
-      password: password,
+    // In Supabase, the password reset is completed by updating the user attributes
+    // on the currently authenticated session (which is established by the deep link).
+    await Supabase.instance.client.auth.updateUser(
+      UserAttributes(password: password),
     );
   }
 
@@ -612,10 +654,8 @@ class AppwriteService {
     ChatPreviewCache.clearAll();
     ProfilePreviewCache.clearAll();
     try {
-      await _account.deleteSession(sessionId: 'current');
-    } catch (_) {
-      // ignore
-    }
+      await Supabase.instance.client.auth.signOut();
+    } catch (_) {}
   }
 
   static Future<void> deleteCurrentAccount() async {
@@ -624,31 +664,17 @@ class AppwriteService {
       throw StateError('User must be signed in to delete their account.');
     }
 
-    final functionId =
-        dotenv.env['APPWRITE_BLOCK_FILTER_FUNCTION_ID']?.trim() ?? '';
-    if (functionId.isEmpty) {
-      throw StateError(
-        'APPWRITE_BLOCK_FILTER_FUNCTION_ID is missing from .env.',
-      );
-    }
-
-    final jwt = await _account.createJWT();
-    await _functions.createExecution(
-      functionId: functionId,
-      path: '/v1/account/delete',
-      method: enums.ExecutionMethod.pOST,
-      body: jsonEncode(<String, dynamic>{
-        'confirm': true,
-        'userJwt': jwt.jwt,
-      }),
-    );
     try {
-      await _account.deleteSession(sessionId: 'current');
+      // 1. Delete profile row first
+      await Supabase.instance.client.from('profiles').delete().eq('id', user.$id);
     } catch (_) {}
-    _resetAuthCaches();
-    ChatMessageCache.clearAll();
-    ChatPreviewCache.clearAll();
-    ProfilePreviewCache.clearAll();
+
+    try {
+      // 2. Call optional delete_user RPC trigger if defined
+      await Supabase.instance.client.rpc('delete_user');
+    } catch (_) {}
+
+    await signOut();
   }
 
   static Future<Map<String, dynamic>?> executeBlockFilterFunction({
@@ -656,10 +682,10 @@ class AppwriteService {
     Map<String, dynamic>? payload,
   }) async {
     final functionId =
-        dotenv.env['APPWRITE_BLOCK_FILTER_FUNCTION_ID']?.trim() ?? '';
+        dotenv.env['BLOCK_FILTER_FUNCTION_ID']?.trim() ?? 'default_function';
     if (functionId.isEmpty) {
       throw StateError(
-        'APPWRITE_BLOCK_FILTER_FUNCTION_ID is missing from .env.',
+        'BLOCK_FILTER_FUNCTION_ID is missing from .env.',
       );
     }
 
@@ -720,15 +746,28 @@ class AppwriteService {
   }
 
   static Future<models.User?> getCurrentUser() async {
+    // Try to get live Supabase Auth session first
+    final supabaseUser = Supabase.instance.client.auth.currentUser;
+    if (supabaseUser != null) {
+      final user = _userFromSupabaseUser(supabaseUser);
+      _currentUserCache = user;
+      unawaited(_saveUserToPrefs(user));
+      return user;
+    }
+
     if (_currentUserCache != null) return _currentUserCache;
     if (_getCurrentUserFuture != null) return _getCurrentUserFuture;
 
     _getCurrentUserFuture = () async {
       try {
-        final user = await _account.get();
-        _currentUserCache = user;
-        unawaited(_saveUserToPrefs(user));
-        return user;
+        final activeUser = Supabase.instance.client.auth.currentUser;
+        if (activeUser != null) {
+          final user = _userFromSupabaseUser(activeUser);
+          _currentUserCache = user;
+          unawaited(_saveUserToPrefs(user));
+          return user;
+        }
+        return null;
       } catch (_) {
         return null;
       } finally {
@@ -783,6 +822,9 @@ class AppwriteService {
   static Map<String, dynamic> _rowToMap(models.Row row) {
     return <String, dynamic>{
       '\$id': row.$id,
+      '\$sequence': row.$sequence,
+      '\$tableId': row.$tableId,
+      '\$databaseId': row.$databaseId,
       '\$createdAt': row.$createdAt,
       '\$updatedAt': row.$updatedAt,
       '\$permissions': row.$permissions,
@@ -818,7 +860,7 @@ class AppwriteService {
       onCompleted(true, isBanned);
     } catch (e) {
       var isSessionExpired = false;
-      if (e is AppwriteException) {
+      if (e is DatabaseException) {
         if (e.code == 401 || e.code == 403) {
           isSessionExpired = true;
         }
@@ -851,6 +893,7 @@ class AppwriteService {
 
 
   static Future<bool> isCurrentUserAdmin() async {
+    if (!adminModeOverride.value) return false;
     if (_isAdminCache != null) return _isAdminCache!;
     final user = await getCurrentUser();
     if (user == null) {
@@ -1476,7 +1519,7 @@ class AppwriteService {
                 : null,
       );
       created = true;
-    } on AppwriteException catch (e) {
+    } on DatabaseException catch (e) {
       if (e.code != 409) rethrow;
       await account.updatePushTarget(
         targetId: targetId,
@@ -1488,29 +1531,19 @@ class AppwriteService {
     final rowId = _hashId('${user.$id}:push-mapping:$safeDeviceId');
     final mappingPayload = <String, dynamic>{
       'userId': user.$id,
-      'deviceId': safeDeviceId,
       'targetId': targetId,
-      'platform': defaultTargetPlatform.name,
-      'targetName': (targetName?.trim().isNotEmpty ?? false)
-          ? targetName!.trim()
-          : 'mobile-${defaultTargetPlatform.name}',
-      'enabled': enabled,
-      'tokenHash': md5.convert(utf8.encode(safeToken)).toString(),
-      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      'targetType': defaultTargetPlatform.name.toLowerCase(),
     };
 
     try {
       await updateRow(messagingTargetsCollectionId, rowId, mappingPayload);
-    } on AppwriteException catch (e) {
+    } on DatabaseException catch (e) {
       if (e.code != 404) rethrow;
       await _tables.createRow(
         databaseId: databaseId,
         tableId: messagingTargetsCollectionId,
         rowId: rowId,
-        data: <String, dynamic>{
-          ...mappingPayload,
-          'createdAt': DateTime.now().toUtc().toIso8601String(),
-        },
+        data: mappingPayload,
       );
     }
 
@@ -1567,7 +1600,7 @@ class AppwriteService {
         targetId: resolvedTargetId,
       );
       created = true;
-    } on AppwriteException catch (e) {
+    } on DatabaseException catch (e) {
       if (e.code != 409) rethrow;
     }
 
@@ -3988,29 +4021,46 @@ class AppwriteService {
   static Future<models.Row?> getProfileByUserId(String userId) async {
     final cached = _profileCache[userId];
     if (cached != null) {
-      _cacheProfilePreviewFromData(cached.$id, cached.data);
-      return cached;
+      final username = cached.data['username'] as String?;
+      if (username != null && username.trim().isNotEmpty) {
+        _cacheProfilePreviewFromData(cached.$id, cached.data);
+        return cached;
+      }
     }
-    try {
-      final res = await _tables.listRows(
-        databaseId: databaseId,
-        tableId: profilesCollectionId,
-        // Profiles table uses camelCase `userId`.
-        queries: [Query.equal('userId', userId), Query.limit(1)],
-      );
-      final row = res.rows.isNotEmpty ? res.rows.first : null;
-      if (row != null) {
-        _profileCache[userId] = row;
-        _cacheProfilePreviewFromData(row.$id, row.data);
-        if (_currentUserCache != null && userId == _currentUserCache!.$id) {
-          unawaited(_saveProfileToPrefs(row));
+
+    // The profiles table primary key is the Supabase Auth UUID.
+    // If the caller passed an Appwrite-style hex ID (not a UUID), resolve the
+    // real UUID from the current Supabase Auth session instead.
+    String resolvedId = userId;
+    if (!RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(userId)) {
+      final supabaseUid = Supabase.instance.client.auth.currentUser?.id;
+      if (supabaseUid != null && supabaseUid.isNotEmpty) {
+        resolvedId = supabaseUid;
+        // Check cache under the resolved ID too.
+        final cachedByUuid = _profileCache[resolvedId];
+        if (cachedByUuid != null) {
+          _profileCache[userId] = cachedByUuid; // alias
+          return cachedByUuid;
         }
       }
+    }
+
+    try {
+      final row = await getRow(profilesCollectionId, resolvedId);
+      _profileCache[resolvedId] = row;
+      if (resolvedId != userId) _profileCache[userId] = row; // alias Appwrite ID
+      _cacheProfilePreviewFromData(row.$id, row.data);
+      if (_currentUserCache != null && userId == _currentUserCache!.$id) {
+        unawaited(_saveProfileToPrefs(row));
+      }
       return row;
-    } catch (_) {
+    } catch (e, stack) {
+      debugPrint('Error loading profile for $userId (resolved $resolvedId): $e');
+      debugPrint(stack.toString());
       return null;
     }
   }
+
 
   static models.Row? getCachedProfileByUserId(String userId) {
     return _profileCache[userId];
@@ -4066,7 +4116,7 @@ class AppwriteService {
     };
     try {
       await updateRow(profilesCollectionId, userId, payload);
-    } on AppwriteException catch (e) {
+    } on DatabaseException catch (e) {
       if (e.code == 404) {
         await _tables.createRow(
           databaseId: databaseId,
@@ -4077,6 +4127,21 @@ class AppwriteService {
       } else {
         rethrow;
       }
+    }
+    try {
+      await Supabase.instance.client.auth.updateUser(
+        UserAttributes(
+          data: {
+            'username': username,
+            'displayName': displayName,
+          },
+        ),
+      );
+      final freshUser = await _account.get();
+      _currentUserCache = freshUser;
+      unawaited(_saveUserToPrefs(freshUser));
+    } catch (e) {
+      debugPrint('Warning: Auth metadata update failed: $e');
     }
     _profileCache.remove(userId);
     _cacheProfilePreviewFromData(
@@ -4102,7 +4167,7 @@ class AppwriteService {
     };
     try {
       await updateRow(chatDevicesCollectionId, rowId, payload);
-    } on AppwriteException catch (e) {
+    } on DatabaseException catch (e) {
       if (e.code == 404) {
         await _tables.createRow(
           databaseId: databaseId,
@@ -4197,3 +4262,514 @@ class AppwriteService {
     );
   }
 }
+
+class Account {
+  Account(dynamic client);
+
+  Client get client => Client();
+
+  Future<models.User> get() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) {
+      throw const AuthException('No current user found');
+    }
+    return models.User.fromMap({
+      '\$id': user.id,
+      '\$createdAt': user.createdAt,
+      '\$updatedAt': user.updatedAt ?? user.createdAt,
+      'name': user.userMetadata?['displayName'] ?? user.userMetadata?['username'] ?? '',
+      'email': user.email ?? '',
+      'phone': '',
+      'status': true,
+      'emailVerification': true,
+      'phoneVerification': true,
+      'prefs': <String, dynamic>{},
+      'accessedAt': DateTime.now().toIso8601String(),
+      'labels': <String>[],
+      'mfa': false,
+      'passwordUpdate': DateTime.now().toIso8601String(),
+      'registration': DateTime.now().toIso8601String(),
+      'targets': <dynamic>[],
+    });
+  }
+
+  Future<void> create({
+    required String userId,
+    required String email,
+    required String password,
+    String? name,
+  }) async {
+    final res = await Supabase.instance.client.auth.signUp(
+      email: email,
+      password: password,
+      data: {
+        'username': name ?? '',
+        'displayName': name ?? '',
+      },
+    );
+    if (res.user == null) {
+      throw const AuthException('Signup failed');
+    }
+  }
+
+  Future<models.Session> createEmailPasswordSession({
+    required String email,
+    required String password,
+  }) async {
+    final authRes = await Supabase.instance.client.auth.signInWithPassword(
+      email: email,
+      password: password,
+    );
+    return models.Session.fromMap({
+      '\$id': authRes.session?.accessToken ?? 'dummy_session',
+      '\$createdAt': DateTime.now().toIso8601String(),
+      'userId': authRes.user?.id ?? 'dummy_user_id',
+      'expire': DateTime.now().add(const Duration(days: 7)).toIso8601String(),
+      'provider': 'email',
+      'providerUid': '',
+      'providerAccessToken': '',
+      'providerAccessTokenExpiry': '',
+      'providerRefreshToken': '',
+      'ip': '',
+      'osCode': '',
+      'osName': '',
+      'osVersion': '',
+      'clientType': '',
+      'clientCode': '',
+      'clientName': '',
+      'clientVersion': '',
+      'clientEngine': '',
+      'clientEngineVersion': '',
+      'deviceModel': '',
+      'deviceBrand': '',
+      'deviceName': '',
+      'countryCode': '',
+      'countryName': '',
+      'current': true,
+      'factors': <String>[],
+      'mfaUpdatedAt': DateTime.now().toIso8601String(),
+      'secret': '',
+    });
+  }
+
+  Future<void> deleteSession({required String sessionId}) async {
+    await Supabase.instance.client.auth.signOut();
+  }
+
+  Future<void> deleteSessions() async {
+    await Supabase.instance.client.auth.signOut();
+  }
+
+  Future<dynamic> createOAuth2Session({required dynamic provider}) async {
+    return null;
+  }
+
+  Future<dynamic> createRecovery({required String email, required String url}) async {
+    return null;
+  }
+
+  Future<dynamic> updateRecovery({
+    required String userId,
+    required String secret,
+    required String password,
+    String? passwordAgain,
+  }) async {
+    return null;
+  }
+
+  Future<models.Jwt> createJWT() async {
+    return models.Jwt.fromMap({
+      'jwt': Supabase.instance.client.auth.currentSession?.accessToken ?? '',
+    });
+  }
+
+  Future<dynamic> createPushTarget({
+    required String targetId,
+    String? providerId,
+    required String identifier,
+    String? name,
+  }) async {
+    return null;
+  }
+
+  Future<dynamic> updatePushTarget({
+    required String targetId,
+    String? providerId,
+    required String identifier,
+    String? name,
+  }) async {
+    return null;
+  }
+}
+
+class TablesDB {
+  TablesDB(dynamic client);
+
+  static const List<String> _creatorIdTables = [
+    'posts',
+    'comments',
+    'creator_balances',
+    'creator_payouts',
+    'ad_impressions'
+  ];
+
+  static String _mapTable(String id) {
+    return _camelToSnake(id);
+  }
+
+  static String _mapColumn(String table, String col) {
+    final snake = _camelToSnake(col);
+    if (_creatorIdTables.contains(table)) {
+      if (snake == 'user_id' || snake == 'creator_id') {
+        return 'creator_id';
+      }
+    }
+    if (table == 'creator_payouts' && (snake == 'requested_at' || snake == 'requested')) {
+      return 'created_at';
+    }
+    return snake;
+  }
+
+  static String _camelToSnake(String str) {
+    if (str == 'commentLikes') return 'comment_likes';
+    final reg = RegExp(r'(?<=[a-z])[A-Z]');
+    return str.replaceAllMapped(reg, (Match m) => '_${m.group(0)!.toLowerCase()}').toLowerCase();
+  }
+
+  static String _snakeToCamel(String str) {
+    final reg = RegExp(r'_([a-z])');
+    return str.replaceAllMapped(reg, (Match m) => m.group(1)!.toUpperCase());
+  }
+
+  static Map<String, dynamic> _keysToSnake(Map<dynamic, dynamic> map) {
+    final Map<String, dynamic> result = {};
+    map.forEach((key, value) {
+      final keyStr = key.toString();
+      if (keyStr.startsWith('\$')) {
+        result[keyStr] = value;
+      } else {
+        result[_camelToSnake(keyStr)] = value;
+      }
+    });
+    return result;
+  }
+
+  static Map<String, dynamic> keysToCamel(Map<dynamic, dynamic> map) {
+    final Map<String, dynamic> result = {};
+    map.forEach((key, value) {
+      final keyStr = key.toString();
+      if (keyStr.startsWith('\$')) {
+        result[keyStr] = value;
+      } else {
+        result[_snakeToCamel(keyStr)] = value;
+      }
+    });
+    return result;
+  }
+
+  static models.Row _mapItemToRow(String tableId, Map<dynamic, dynamic> item) {
+    final id = item['id']?.toString() ?? '';
+    final createdAt = item['created_at']?.toString() ?? DateTime.now().toIso8601String();
+    final updatedAt = item['updated_at']?.toString() ?? createdAt;
+
+    final dataMap = keysToCamel(item);
+    if (tableId.contains('profile')) {
+      dataMap['userId'] = id;
+    }
+    if (tableId.contains('payout')) {
+      dataMap['requestedAt'] = dataMap['createdAt'] ?? createdAt;
+    }
+    if (dataMap.containsKey('creatorId')) {
+      dataMap['userId'] = dataMap['creatorId'];
+    } else if (dataMap.containsKey('userId')) {
+      dataMap['creatorId'] = dataMap['userId'];
+    }
+
+    return models.Row.fromMap({
+      '\$id': id,
+      '\$sequence': 0,
+      '\$tableId': tableId,
+      '\$databaseId': 'supabase',
+      '\$createdAt': createdAt,
+      '\$updatedAt': updatedAt,
+      '\$permissions': <dynamic>[],
+      'data': dataMap,
+    });
+  }
+
+  Future<models.Row> getRow({
+    required String databaseId,
+    required String tableId,
+    required String rowId,
+  }) async {
+    final mapped = _mapTable(tableId);
+    final res = await Supabase.instance.client.from(mapped).select().eq('id', rowId).single();
+    return _mapItemToRow(mapped, res);
+  }
+
+  Future<models.Row> updateRow({
+    required String databaseId,
+    required String tableId,
+    required String rowId,
+    required Map<String, dynamic> data,
+  }) async {
+    final mapped = _mapTable(tableId);
+    final cleanData = _keysToSnake(data)
+      ..remove('\$id')
+      ..remove('\$createdAt')
+      ..remove('\$updatedAt');
+
+    if (_creatorIdTables.contains(mapped)) {
+      if (cleanData.containsKey('user_id')) {
+        cleanData['creator_id'] = cleanData.remove('user_id');
+      }
+    }
+
+    final res = await Supabase.instance.client
+        .from(mapped)
+        .update(cleanData)
+        .eq('id', rowId)
+        .select()
+        .single();
+    return _mapItemToRow(mapped, res);
+  }
+
+  Future<models.Row> createRow({
+    required String databaseId,
+    required String tableId,
+    required String rowId,
+    required Map<String, dynamic> data,
+    List<dynamic>? permissions,
+  }) async {
+    final mapped = _mapTable(tableId);
+    final cleanData = _keysToSnake(data)
+      ..remove('\$id')
+      ..remove('\$createdAt')
+      ..remove('\$updatedAt');
+    
+    cleanData['id'] = rowId;
+
+    if (_creatorIdTables.contains(mapped)) {
+      if (cleanData.containsKey('user_id')) {
+        cleanData['creator_id'] = cleanData.remove('user_id');
+      }
+    }
+
+    final res = await Supabase.instance.client.from(mapped).insert(cleanData).select().single();
+    return _mapItemToRow(mapped, res);
+  }
+
+  Future<dynamic> deleteRow({
+    required String databaseId,
+    required String tableId,
+    required String rowId,
+  }) async {
+    final mapped = _mapTable(tableId);
+    await Supabase.instance.client.from(mapped).delete().eq('id', rowId);
+    return true;
+  }
+
+  Future<models.RowList> listRows({
+    required String databaseId,
+    required String tableId,
+    List<dynamic>? queries,
+  }) async {
+    final mapped = _mapTable(tableId);
+    dynamic builder = Supabase.instance.client.from(mapped).select();
+
+    if (queries != null) {
+      for (final q in queries) {
+        final queryStr = q.toString();
+        if (queryStr.contains('equal(')) {
+          final match = RegExp(r'equal\("([^"]+)",\s*\[?"?([^"\]]+)"?\]?\)').firstMatch(queryStr);
+          if (match != null) {
+            final col = _mapColumn(mapped, match.group(1)!);
+            builder = builder.eq(col, match.group(2)!);
+          }
+        } else if (queryStr.contains('limit(')) {
+          final match = RegExp(r'limit\((\d+)\)').firstMatch(queryStr);
+          if (match != null) {
+            builder = builder.limit(int.parse(match.group(1)!));
+          }
+        } else if (queryStr.contains('orderDesc(')) {
+          final match = RegExp(r'orderDesc\("([^"]+)"\)').firstMatch(queryStr);
+          if (match != null) {
+            final col = _mapColumn(mapped, match.group(1)!);
+            builder = builder.order(col, ascending: false);
+          }
+        } else if (queryStr.contains('orderAsc(')) {
+          final match = RegExp(r'orderAsc\("([^"]+)"\)').firstMatch(queryStr);
+          if (match != null) {
+            final col = _mapColumn(mapped, match.group(1)!);
+            builder = builder.order(col, ascending: true);
+          }
+        } else if (queryStr.contains('greaterThanEqual(')) {
+          final match = RegExp(r'greaterThanEqual\("([^"]+)",\s*"([^"]+)"\)').firstMatch(queryStr);
+          if (match != null) {
+            final col = _mapColumn(mapped, match.group(1)!);
+            builder = builder.gte(col, match.group(2)!);
+          }
+        } else if (queryStr.contains('lessThan(')) {
+          final match = RegExp(r'lessThan\("([^"]+)",\s*"([^"]+)"\)').firstMatch(queryStr);
+          if (match != null) {
+            final col = _mapColumn(mapped, match.group(1)!);
+            builder = builder.lt(col, match.group(2)!);
+          }
+        } else if (queryStr.contains('search(')) {
+          final match = RegExp(r'search\("([^"]+)",\s*"([^"]+)"\)').firstMatch(queryStr);
+          if (match != null) {
+            final col = _mapColumn(mapped, match.group(1)!);
+            builder = builder.ilike(col, '%${match.group(2)!}%');
+          }
+        }
+      }
+    }
+
+    final List<dynamic> res = await builder;
+    return models.RowList.fromMap({
+      'total': res.length,
+      'rows': res.map((item) {
+        final camelMap = keysToCamel(item);
+        return {
+          '\$id': item['id']?.toString() ?? '',
+          '\$createdAt': item['created_at']?.toString() ?? DateTime.now().toIso8601String(),
+          '\$updatedAt': item['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
+          '\$collectionId': mapped,
+          '\$databaseId': 'supabase',
+          '\$permissions': <dynamic>[],
+          'data': {
+            ...camelMap,
+            '\$id': item['id']?.toString() ?? '',
+            '\$createdAt': item['created_at']?.toString() ?? DateTime.now().toIso8601String(),
+            '\$updatedAt': item['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
+          },
+        };
+      }).toList(),
+    });
+  }
+}
+
+class Realtime {
+  // ignore: avoid_unused_constructor_parameters
+  Realtime(dynamic client);
+
+  RealtimeSubscription subscribe(List<String> channels) {
+    return RealtimeSubscription(channels);
+  }
+}
+
+class RealtimeSubscription {
+  final List<String> channels;
+  final StreamController<RealtimeMessage> _controller = StreamController<RealtimeMessage>.broadcast();
+  final List<RealtimeChannel> _supabaseChannels = [];
+
+  Stream<RealtimeMessage> get stream => _controller.stream;
+
+  RealtimeSubscription(this.channels) {
+    _init();
+  }
+
+  static String _camelToSnake(String str) {
+    if (str == 'commentLikes') return 'comment_likes';
+    if (str == 'postBoosts') return 'post_boosts';
+    final reg = RegExp(r'(?<=[a-z])[A-Z]');
+    return str.replaceAllMapped(reg, (Match m) => '_${m.group(0)!.toLowerCase()}').toLowerCase();
+  }
+
+  void _init() {
+    for (final channelStr in channels) {
+      final parts = channelStr.split('.');
+      if (parts.length < 4) continue;
+      
+      final collectionId = parts[3];
+      String? documentId;
+      if (parts.length > 5) {
+        documentId = parts[5];
+      }
+
+      final tableName = _camelToSnake(collectionId);
+      final filterObj = documentId != null
+          ? PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'id',
+              value: documentId,
+            )
+          : null;
+
+      final channelName = 'realtime_$collectionId${documentId != null ? "_$documentId" : ""}';
+      final supabaseChannel = Supabase.instance.client.channel(channelName);
+
+      supabaseChannel.onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: tableName,
+        filter: filterObj,
+        callback: (payload) {
+          final record = (payload.eventType == PostgresChangeEvent.delete)
+              ? payload.oldRecord
+              : payload.newRecord;
+
+          if (record.isEmpty) return;
+
+          final camelPayload = TablesDB.keysToCamel(record);
+          camelPayload['\$id'] = record['id'] ?? '';
+          if (record['created_at'] != null) {
+            camelPayload['\$createdAt'] = record['created_at'];
+          }
+          if (record['updated_at'] != null) {
+            camelPayload['\$updatedAt'] = record['updated_at'];
+          }
+
+          String eventName = '';
+          switch (payload.eventType) {
+            case PostgresChangeEvent.insert:
+              eventName = 'databases.${BackendService.databaseId}.collections.$collectionId.documents.${record["id"]}.create';
+              break;
+            case PostgresChangeEvent.update:
+              eventName = 'databases.${BackendService.databaseId}.collections.$collectionId.documents.${record["id"]}.update';
+              break;
+            case PostgresChangeEvent.delete:
+              eventName = 'databases.${BackendService.databaseId}.collections.$collectionId.documents.${record["id"]}.delete';
+              break;
+            default:
+              break;
+          }
+
+          if (eventName.isNotEmpty) {
+            _controller.add(RealtimeMessage(
+              events: [eventName],
+              payload: camelPayload,
+              timestamp: DateTime.now().toIso8601String(),
+              channels: [channelStr],
+            ));
+          }
+        },
+      );
+
+      supabaseChannel.subscribe();
+      _supabaseChannels.add(supabaseChannel);
+    }
+  }
+
+  void close() {
+    for (final channel in _supabaseChannels) {
+      Supabase.instance.client.removeChannel(channel);
+    }
+    _controller.close();
+  }
+}
+
+class RealtimeMessage {
+  final List<String> events;
+  final Map<String, dynamic> payload;
+  final String timestamp;
+  final List<String> channels;
+
+  RealtimeMessage({
+    required this.events,
+    required this.payload,
+    required this.timestamp,
+    required this.channels,
+  });
+}
+

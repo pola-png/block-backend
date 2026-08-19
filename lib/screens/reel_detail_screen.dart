@@ -1,8 +1,8 @@
-import 'package:appwrite/models.dart' as models;
+import 'package:xapzap/models/database_models.dart' as models;
 import 'package:flutter/material.dart';
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/series_episode_tray.dart';
 import '../widgets/reel_player.dart';
@@ -55,7 +55,7 @@ class _ReelDetailScreenState extends State<ReelDetailScreen> {
 
   Future<void> _loadEpisodeMeta() async {
     try {
-      final meta = await AppwriteService.fetchEpisodeMetadata(_currentPost.id);
+      final meta = await BackendService.fetchEpisodeMetadata(_currentPost.id);
       if (!mounted) return;
       setState(() {
         _episodeMeta = meta['isEpisode'] == true ? meta : null;
@@ -65,7 +65,7 @@ class _ReelDetailScreenState extends State<ReelDetailScreen> {
 
   Future<void> _loadNextEpisode() async {
     try {
-      final meta = await AppwriteService.fetchEpisodeMetadata(_currentPost.id);
+      final meta = await BackendService.fetchEpisodeMetadata(_currentPost.id);
       if (meta['isEpisode'] != true) {
         if (!mounted) return;
         setState(() {
@@ -92,7 +92,7 @@ class _ReelDetailScreenState extends State<ReelDetailScreen> {
         return;
       }
 
-      final nextRow = await AppwriteService.fetchNextEpisodeRow(
+      final nextRow = await BackendService.fetchNextEpisodeRow(
         userId: userId,
         seriesTitle: seriesTitle,
         currentEpisodeNumber: episodeNumber,

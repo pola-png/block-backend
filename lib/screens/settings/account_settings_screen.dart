@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:xapzap/services/appwrite_service.dart';
+import 'package:xapzap/services/backend_service.dart';
 
 class AccountSettingsScreen extends StatefulWidget {
   const AccountSettingsScreen({super.key});
@@ -25,8 +25,8 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
 
   Future<void> _loadUserData() async {
     try {
-      final user = await AppwriteService.getAccount();
-      final userRow = await AppwriteService.getRow('users', user.$id);
+      final user = await BackendService.getAccount();
+      final userRow = await BackendService.getRow('users', user.$id);
       _fullNameController.text = (userRow.data['fullName'] ?? '').toString();
       _usernameController.text = (userRow.data['username'] ?? '').toString();
       _emailController.text = user.email;
@@ -232,8 +232,8 @@ class _AccountSettingsScreenState extends State<AccountSettingsScreen> {
   Future<void> _saveChanges() async {
     if (!_formKey.currentState!.validate()) return;
     try {
-      final user = await AppwriteService.getAccount();
-      await AppwriteService.updateRow('users', user.$id, {
+      final user = await BackendService.getAccount();
+      await BackendService.updateRow('users', user.$id, {
         'fullName': _fullNameController.text,
         'username': _usernameController.text,
         'phone': _phoneController.text,

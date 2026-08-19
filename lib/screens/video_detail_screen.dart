@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
@@ -10,7 +10,7 @@ import '../services/ad_helper.dart';
 import '../models/post.dart';
 import '../screens/comment_screen.dart';
 import '../widgets/taggable_text.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/native_ad_preload_service.dart';
 import '../services/post_view_retry_queue.dart';
 import '../services/global_video_manager.dart';
@@ -247,7 +247,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen>
 
   Future<void> _loadEpisodeMeta() async {
     try {
-      final meta = await AppwriteService.fetchEpisodeMetadata(widget.post.id);
+      final meta = await BackendService.fetchEpisodeMetadata(widget.post.id);
       if (!mounted) return;
       setState(() {
         _episodeMeta = meta['isEpisode'] == true ? meta : null;
@@ -293,8 +293,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen>
   void _subscribePostRealtime() {
     try {
       final channel =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postsCollectionId}.documents';
-      _postSub = AppwriteService.realtime.subscribe([channel]);
+          'databases.${BackendService.databaseId}.collections.${BackendService.postsCollectionId}.documents';
+      _postSub = BackendService.realtime.subscribe([channel]);
       _postSub?.stream.listen((event) {
         if (!mounted || event.events.isEmpty) return;
         final payload = event.payload;
@@ -1000,8 +1000,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen>
 
     setState(() => _isSubmittingComment = true);
     try {
-      await AppwriteService.createComment(widget.post.id, text);
-      unawaited(AppwriteService.incrementPostComments(widget.post.id, 1));
+      await BackendService.createComment(widget.post.id, text);
+      unawaited(BackendService.incrementPostComments(widget.post.id, 1));
 
       if (!mounted) return;
       final currentPost = _livePost ?? widget.post;

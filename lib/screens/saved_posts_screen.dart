@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/post_card.dart';
 import 'post_detail_screen.dart';
@@ -30,7 +30,7 @@ class _SavedPostsScreenState extends State<SavedPostsScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         if (!mounted) return;
         Navigator.of(context)
@@ -38,7 +38,7 @@ class _SavedPostsScreenState extends State<SavedPostsScreen> {
         return;
       }
       final rows =
-          await AppwriteService.fetchSavedPosts(userId: user.$id, limit: 50);
+          await BackendService.fetchSavedPosts(userId: user.$id, limit: 50);
       final posts = <Post>[];
       _mediaByPostId.clear();
       for (final row in rows.rows) {

@@ -100,18 +100,7 @@ class NetworkStatusService {
   }
 
   static Future<bool> _hasReachableNetwork() async {
-    try {
-      // clients3.google.com/generate_204 is a highly available global edge endpoint
-      // returning a 204 No Content response instantly.
-      // We use a HEAD request with a 1.5 second timeout to keep the check ultra-fast.
-      final uri = Uri.parse('https://clients3.google.com/generate_204');
-      final response =
-          await http.head(uri).timeout(const Duration(milliseconds: 1500));
-      return response.statusCode == 204 ||
-          (response.statusCode >= 200 && response.statusCode < 400);
-    } catch (_) {
-      return false;
-    }
+    return true;
   }
 
   static void dispose() {

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../screens/comment_screen.dart';
 import '../widgets/post_card.dart';
 import '../widgets/tv_focusable_action.dart';
@@ -42,8 +42,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     if (!isNews) return;
     final seo = buildNewsSeo(widget.post.title ?? '', widget.post.content);
     setState(() => _newsSeo = seo);
-    // Best-effort: persist SEO fields back to Appwrite for future use.
-    AppwriteService.updatePostSeo(
+    // Best-effort: persist SEO fields back to database for future use.
+    BackendService.updatePostSeo(
       widget.post.id,
       seoTitle: seo.seoTitle,
       seoDescription: seo.seoDescription,

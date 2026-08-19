@@ -8,7 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 import 'crypto_service.dart';
 import 'firebase_service.dart';
 import 'navigation_service.dart';
@@ -67,7 +67,7 @@ class PushNotificationService {
 
   static Future<void> _requestPermissionAndSync({bool request = false}) async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) return;
 
       if (!request) {
@@ -269,7 +269,7 @@ class PushNotificationService {
     required String? token,
     required bool enabled,
   }) async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (user == null) return;
 
     final payload = <String, dynamic>{
@@ -280,7 +280,7 @@ class PushNotificationService {
     };
 
     try {
-      await AppwriteService.updateUserProfile(user.$id, payload);
+      await BackendService.updateUserProfile(user.$id, payload);
     } catch (_) {
       // Keep notification registration non-fatal if the backend schema
       // does not yet contain the push fields.
@@ -292,7 +292,7 @@ class PushNotificationService {
 
     try {
       final deviceId = await CryptoService.getDeviceId();
-      final registration = await AppwriteService.registerMessagingPushDevice(
+      final registration = await BackendService.registerMessagingPushDevice(
         token: token,
         enabled: enabled,
         deviceId: deviceId,
@@ -302,7 +302,7 @@ class PushNotificationService {
 
       final targetId = registration?['targetId']?.toString().trim();
       if (enabled) {
-        await AppwriteService.subscribeCurrentUserToTopic(
+        await BackendService.subscribeCurrentUserToTopic(
           topicId: _broadcastTopicId,
           targetId: targetId?.isNotEmpty == true ? targetId : null,
           deviceId: deviceId,

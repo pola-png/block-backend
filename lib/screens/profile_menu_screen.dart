@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/app_review_service.dart';
 import 'about_xapzap_screen.dart';
 import 'account_deletion_screen.dart';
@@ -23,7 +23,7 @@ class ProfileMenuScreen extends StatelessWidget {
 
   Future<void> _signOut(BuildContext context) async {
     try {
-      await AppwriteService.signOut();
+      await BackendService.signOut();
       if (!context.mounted) return;
       Navigator.of(context).pushNamedAndRemoveUntil('/signin', (route) => false);
     } catch (_) {

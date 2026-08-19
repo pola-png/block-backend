@@ -1,4 +1,4 @@
-package badmuscodehive.appldq
+package com.xapzap.app
 
 import android.app.UiModeManager
 import android.content.Context

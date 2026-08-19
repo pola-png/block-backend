@@ -2,9 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:appwrite/appwrite.dart'
-    show Permission, RealtimeSubscription, Role;
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart'
+    show Permission, Role;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cryptography/cryptography.dart';
@@ -20,7 +20,7 @@ import '../models/chat.dart';
 import '../services/realtime_gateway.dart';
 import '../services/chat_message_cache.dart';
 import '../services/chat_preview_cache.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/crypto_service.dart';
 import '../services/storage_service.dart';
 import '../main.dart';
@@ -419,7 +419,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
     });
 
     try {
-      await AppwriteService.deleteMessage(message.id);
+      await BackendService.deleteMessage(message.id);
       setState(() {
         _messages.removeWhere((m) => m.id == message.id);
       });
@@ -469,8 +469,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
         plaintext: newText,
       );
       if (enc == null) return;
-      await AppwriteService.updateRow(
-        AppwriteService.messagesCollectionId,
+      await BackendService.updateRow(
+        BackendService.messagesCollectionId,
         messageId,
         {
           'ciphertext': enc['ciphertext'] ?? '',
@@ -1231,8 +1231,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       ];
       final mediaUrl = await StorageService.getSignedUrl(stored.first);
 
-      final created = await AppwriteService.createDocument(
-        AppwriteService.messagesCollectionId,
+      final created = await BackendService.createDocument(
+        BackendService.messagesCollectionId,
         {
           'chatId': chatId,
           'senderId': _currentUserId,
@@ -1271,8 +1271,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
 
       unawaited(() async {
         try {
-          await AppwriteService.updateRow(
-            AppwriteService.chatsCollectionId,
+          await BackendService.updateRow(
+            BackendService.chatsCollectionId,
             chatId,
             {
               'lastMessage': 'Voice message',
@@ -1292,7 +1292,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
           );
         } catch (_) {}
         final senderProfile =
-            await AppwriteService.getProfileByUserId(_currentUserId!);
+            await BackendService.getProfileByUserId(_currentUserId!);
         final senderData = senderProfile?.data ?? <String, dynamic>{};
         final senderName =
             (senderData['displayName'] as String?)?.trim().isNotEmpty == true
@@ -1301,7 +1301,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
                     ? (senderData['username'] as String).trim()
                     : 'New message');
         final senderAvatar = (senderData['avatarUrl'] as String?)?.trim() ?? '';
-        await AppwriteService.sendChatPushNotification(
+        await BackendService.sendChatPushNotification(
           recipientUserId: widget.chat.partnerId,
           chatId: chatId,
           senderUserId: _currentUserId!,
@@ -1337,7 +1337,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
   }
 
   Future<void> _init() async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return;
     _currentUserId = me.$id;
     await _ensureChatId();
@@ -1347,7 +1347,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
     unawaited(_loadLatestMessages());
 
     try {
-      final profile = await AppwriteService.getProfileByUserId(widget.chat.partnerId);
+      final profile = await BackendService.getProfileByUserId(widget.chat.partnerId);
       if (profile != null && mounted) {
         setState(() {
           _partnerIsVerified = profile.data['isVerified'] == true ||
@@ -1488,7 +1488,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       throw StateError('User must be signed in to start a chat.');
     }
     final resolved =
-        await AppwriteService.getChatId(_currentUserId!, widget.chat.partnerId);
+        await BackendService.getChatId(_currentUserId!, widget.chat.partnerId);
     _resolvedChatId = resolved;
     return resolved;
   }
@@ -1499,7 +1499,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
     _isLoadingMessages = true;
     try {
       final chatId = await _ensureChatId();
-      final page = await AppwriteService.fetchMessagesForChat(
+      final page = await BackendService.fetchMessagesForChat(
         chatId,
         limit: _messagePageSize,
       );
@@ -1596,7 +1596,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
     _isLoadingOlderMessages = true;
     try {
       final chatId = await _ensureChatId();
-      final page = await AppwriteService.fetchMessagesForChat(
+      final page = await BackendService.fetchMessagesForChat(
         chatId,
         limit: _messagePageSize,
         cursorId: _oldestLoadedMessageId,
@@ -1743,8 +1743,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       return;
     }
     try {
-      final fresh = await AppwriteService.getRow(
-        AppwriteService.messagesCollectionId,
+      final fresh = await BackendService.getRow(
+        BackendService.messagesCollectionId,
         rowId,
       );
       final freshReadBy = _readByList(fresh.data['readBy']);
@@ -1758,8 +1758,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
           freshStatus == MessageDeliveryStatus.read) {
         return;
       }
-      await AppwriteService.updateRow(
-        AppwriteService.messagesCollectionId,
+      await BackendService.updateRow(
+        BackendService.messagesCollectionId,
         rowId,
         {
           ...fresh.data,
@@ -1795,15 +1795,15 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
     final chatId = _chatId;
     if (chatId.isEmpty) return;
     try {
-      final row = await AppwriteService.getRow(
-        AppwriteService.chatsCollectionId,
+      final row = await BackendService.getRow(
+        BackendService.chatsCollectionId,
         chatId,
       );
       final data = row.data;
       if ((data['lastMessageId'] as String?)?.trim() != message.id) return;
       final status = message.deliveryStatus.value;
-      await AppwriteService.updateRow(
-        AppwriteService.chatsCollectionId,
+      await BackendService.updateRow(
+        BackendService.chatsCollectionId,
         chatId,
         {
           ...data,
@@ -1860,9 +1860,9 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
 
   void _subscribeMessages() {
     final channel =
-        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.messagesCollectionId}.documents';
+        'databases.${BackendService.databaseId}.collections.${BackendService.messagesCollectionId}.documents';
     try {
-      _messagesSub = AppwriteService.realtime.subscribe([channel]);
+      _messagesSub = BackendService.realtime.subscribe([channel]);
       _messagesSub?.stream.listen((event) async {
         if (!mounted) return;
         if (event.events.isEmpty) return;
@@ -1902,7 +1902,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       final chatId = await _ensureChatId();
       ChatMessageCache.markChatAsRead(chatId);
       final aw.RowList list =
-          await AppwriteService.fetchMessagesForChat(chatId, limit: limit);
+          await BackendService.fetchMessagesForChat(chatId, limit: limit);
       for (final row in list.rows) {
         final data = row.data;
         final senderId = (data['senderId'] as String?) ?? '';
@@ -1910,8 +1910,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
         final readBySet = _readByList(data['readBy']).toSet();
         if (readBySet.contains(_currentUserId)) continue;
         readBySet.add(_currentUserId!);
-        await AppwriteService.updateRow(
-          AppwriteService.messagesCollectionId,
+        await BackendService.updateRow(
+          BackendService.messagesCollectionId,
           row.$id,
           {
             ...data,
@@ -1978,8 +1978,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
         throw StateError('Secure messaging is not ready on this device.');
       }
 
-      final created = await AppwriteService.createDocument(
-        AppwriteService.messagesCollectionId,
+      final created = await BackendService.createDocument(
+        BackendService.messagesCollectionId,
         {
           'chatId': chatId,
           'senderId': _currentUserId,
@@ -2020,8 +2020,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       }
       unawaited(() async {
         try {
-          await AppwriteService.updateRow(
-            AppwriteService.chatsCollectionId,
+          await BackendService.updateRow(
+            BackendService.chatsCollectionId,
             chatId,
             {
               'lastMessage': text,
@@ -2041,7 +2041,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
           );
         } catch (_) {}
         final senderProfile =
-            await AppwriteService.getProfileByUserId(_currentUserId!);
+            await BackendService.getProfileByUserId(_currentUserId!);
         final senderData = senderProfile?.data ?? <String, dynamic>{};
         final senderName =
             (senderData['displayName'] as String?)?.trim().isNotEmpty == true
@@ -2050,7 +2050,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
                     ? (senderData['username'] as String).trim()
                     : 'New message');
         final senderAvatar = (senderData['avatarUrl'] as String?)?.trim() ?? '';
-        await AppwriteService.sendChatPushNotification(
+        await BackendService.sendChatPushNotification(
           recipientUserId: widget.chat.partnerId,
           chatId: chatId,
           senderUserId: _currentUserId!,
@@ -2171,8 +2171,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
             ];
       final mediaUrl = await StorageService.getSignedUrl(stored.first);
 
-      final created = await AppwriteService.createDocument(
-        AppwriteService.messagesCollectionId,
+      final created = await BackendService.createDocument(
+        BackendService.messagesCollectionId,
         {
           'chatId': chatId,
           'senderId': _currentUserId,
@@ -2212,8 +2212,8 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       final previewBody = mediaType == 'image' ? 'Photo' : 'Video';
       unawaited(() async {
         try {
-          await AppwriteService.updateRow(
-            AppwriteService.chatsCollectionId,
+          await BackendService.updateRow(
+            BackendService.chatsCollectionId,
             chatId,
             {
               'lastMessage': previewBody,
@@ -2233,7 +2233,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
           );
         } catch (_) {}
         final senderProfile =
-            await AppwriteService.getProfileByUserId(_currentUserId!);
+            await BackendService.getProfileByUserId(_currentUserId!);
         final senderData = senderProfile?.data ?? <String, dynamic>{};
         final senderName =
             (senderData['displayName'] as String?)?.trim().isNotEmpty == true
@@ -2245,7 +2245,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
         final notificationBody = mediaType == 'image'
             ? '$senderName sent a photo'
             : '$senderName sent a video';
-        await AppwriteService.sendChatPushNotification(
+        await BackendService.sendChatPushNotification(
           recipientUserId: widget.chat.partnerId,
           chatId: chatId,
           senderUserId: _currentUserId!,

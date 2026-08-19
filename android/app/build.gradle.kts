@@ -17,7 +17,7 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "badmuscodehive.appldq"
+    namespace = "com.xapzap.app"
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
@@ -33,7 +33,7 @@ android {
 
     defaultConfig {
         // Application ID (package name)
-        applicationId = "badmuscodehive.appldq"
+        applicationId = "com.xapzap.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/post.dart';
 import '../utils/format_utils.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/global_video_manager.dart';
 import '../services/storage_service.dart';
 import '../screens/profile_screen.dart';
@@ -182,7 +182,7 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
       return;
     }
 
-    final cached = AppwriteService.getCachedProfileByUserId(authorId);
+    final cached = BackendService.getCachedProfileByUserId(authorId);
     if (cached != null) {
       final displayName = (cached.data['displayName'] as String?)?.trim();
       final avatar = _resolveAvatarUrlSync(
@@ -196,7 +196,7 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
     }
 
     try {
-      final profile = await AppwriteService.getProfileByUserId(authorId);
+      final profile = await BackendService.getProfileByUserId(authorId);
       final displayName = (profile?.data['displayName'] as String?)?.trim();
       final avatar = _resolveAvatarUrlSync(
         ((profile?.data['avatarUrl'] as String?)?.trim().isNotEmpty == true)
@@ -219,7 +219,7 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
   }
 
   Future<void> _loadCurrentUser() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     setState(() {
       _currentUserId = user?.$id;
@@ -448,7 +448,7 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
               final navigator = Navigator.of(dcontext);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.reportPost(
+                await BackendService.reportPost(
                   widget.post.id,
                   'Inappropriate content',
                 );
@@ -497,7 +497,7 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
               final navigator = Navigator.of(dcontext);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.blockUser(targetUserId);
+                await BackendService.blockUser(targetUserId);
                 if (!mounted) return;
                 navigator.pop();
                 messenger.showSnackBar(

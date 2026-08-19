@@ -1,7 +1,7 @@
-import 'package:appwrite/appwrite.dart';
+import 'package:xapzap/models/database_models.dart';
 import 'package:flutter/material.dart';
 
-import '../../services/appwrite_service.dart';
+import '../../services/backend_service.dart';
 import 'auth_form.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
@@ -170,7 +170,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
     setState(() => _isLoading = true);
     try {
-      await AppwriteService.completePasswordRecovery(
+      await BackendService.completePasswordRecovery(
         userId: _userId,
         secret: _secret,
         password: _passwordController.text,
@@ -183,7 +183,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         MaterialPageRoute(builder: (_) => const AuthForm(mode: AuthMode.signin)),
         (route) => false,
       );
-    } on AppwriteException catch (e) {
+    } on DatabaseException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_messageForError(e))),
@@ -198,7 +198,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     }
   }
 
-  String _messageForError(AppwriteException error) {
+  String _messageForError(DatabaseException error) {
     final type = (error.type ?? '').toLowerCase();
     final message = (error.message ?? '').toLowerCase();
     if (type.contains('user_invalid_secret') || message.contains('secret')) {

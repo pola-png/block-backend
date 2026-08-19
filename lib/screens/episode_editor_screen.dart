@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/post.dart';
 import '../models/upload_type.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import 'episode_media_editor_screen.dart';
 import 'series_studio_screen.dart';
 import 'series_page_screen.dart';
@@ -40,7 +40,7 @@ class _EpisodeEditorScreenState extends State<EpisodeEditorScreen> {
   Future<void> _loadEpisodeState() async {
     setState(() => _isLoading = true);
     try {
-      final meta = await AppwriteService.fetchEpisodeMetadata(widget.post.id);
+      final meta = await BackendService.fetchEpisodeMetadata(widget.post.id);
       if (!mounted) return;
       _episodeContentType = ((meta['episodeContentType'] as String?) ?? 'video')
           .trim()
@@ -77,8 +77,8 @@ class _EpisodeEditorScreenState extends State<EpisodeEditorScreen> {
     if (description.isEmpty) return;
     setState(() => _isSaving = true);
     try {
-      await AppwriteService.updateRow(
-        AppwriteService.postsCollectionId,
+      await BackendService.updateRow(
+        BackendService.postsCollectionId,
         widget.post.id,
         <String, dynamic>{
           'content': description,

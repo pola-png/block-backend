@@ -1,17 +1,41 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class AdHelper {
-  static const String appId = 'ca-app-pub-3088816615654692~2858270657';
-  static const String banner = 'ca-app-pub-3088816615654692/6898314361';
-  static const String native = 'ca-app-pub-3088816615654692/6414372284';
-  static const String rewarded = 'ca-app-pub-3088816615654692/1590147363';
-  static const String rewardedReels = 'ca-app-pub-3088816615654692/4404047031';
+  static const String appId = 'ca-app-pub-3088816615654692~2908303701';
+
+  static String get appOpen => kDebugMode
+      ? 'ca-app-pub-3940256099942544/9257395921'
+      : 'ca-app-pub-3088816615654692/2070381678';
+
+  static String get banner => kDebugMode
+      ? 'ca-app-pub-3940256099942544/6300978111'
+      : 'ca-app-pub-3088816615654692/4271104801';
+
+  static String get interstitial => kDebugMode
+      ? 'ca-app-pub-3940256099942544/1033173712'
+      : 'ca-app-pub-3088816615654692/2958023134';
+
+  static String get native => kDebugMode
+      ? 'ca-app-pub-3940256099942544/2247696110'
+      : 'ca-app-pub-3088816615654692/6836086212';
+
+  static String get rewarded => kDebugMode
+      ? 'ca-app-pub-3940256099942544/5224354917'
+      : 'ca-app-pub-3088816615654692/1556527737';
+
+  static String get rewardedReels => kDebugMode
+      ? 'ca-app-pub-3940256099942544/5224354917'
+      : 'ca-app-pub-3088816615654692/7794633021';
 
   static List<String> get nativeUnits {
+    if (kDebugMode) {
+      return const <String>['ca-app-pub-3940256099942544/2247696110'];
+    }
     final raw = dotenv.env['XAPZAP_NATIVE_AD_UNIT_IDS']?.trim();
     if (raw == null || raw.isEmpty) {
       return const <String>[
-        'ca-app-pub-3088816615654692/6414372284',
+        'ca-app-pub-3088816615654692/6836086212',
         'ca-app-pub-3088816615654692/1141657121',
         'ca-app-pub-3088816615654692/4267634446',
         'ca-app-pub-3088816615654692/5150410625',
@@ -54,9 +78,12 @@ class AdHelper {
   }
 
   static List<String> get rewardedUnits {
+    if (kDebugMode) {
+      return const <String>['ca-app-pub-3940256099942544/5224354917'];
+    }
     final raw = dotenv.env['XAPZAP_REWARDED_AD_UNIT_IDS']?.trim();
     if (raw == null || raw.isEmpty) {
-      return const <String>[
+      return <String>[
         rewarded,
         'ca-app-pub-3088816615654692/9108897586',
         'ca-app-pub-3088816615654692/5269626865',
@@ -70,7 +97,7 @@ class AdHelper {
         .map((v) => v.trim())
         .where((v) => v.isNotEmpty)
         .toList(growable: false);
-    return units.isEmpty ? const <String>[rewarded] : units;
+    return units.isEmpty ? <String>[rewarded] : units;
   }
 
   static String rewardedForKey(String key) {
@@ -81,7 +108,11 @@ class AdHelper {
   }
 
   static String get rewardedReelsUnit {
+    if (kDebugMode) {
+      return 'ca-app-pub-3940256099942544/5224354917';
+    }
     final raw = dotenv.env['XAPZAP_REWARDED_REELS_AD_UNIT_ID']?.trim();
     return raw == null || raw.isEmpty ? rewardedReels : raw;
   }
 }
+

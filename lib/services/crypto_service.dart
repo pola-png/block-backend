@@ -4,7 +4,7 @@ import 'package:crypto/crypto.dart' as hash;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 
 class ChatDeviceBundle {
   final String userId;
@@ -131,7 +131,7 @@ class CryptoService {
   }
 
   static Future<KeyPair?> ensureIdentityKeysAndPublish() async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return null;
 
     final identityKeys = await _getIdentityKeyPair();
@@ -139,7 +139,7 @@ class CryptoService {
     final publicKeyB64 = base64Encode(identityPublicKey.bytes);
 
     try {
-      await AppwriteService.updateUserProfile(me.$id, {
+      await BackendService.updateUserProfile(me.$id, {
         'publicKey': publicKeyB64,
       });
     } catch (_) {}
@@ -149,7 +149,7 @@ class CryptoService {
   }
 
   static Future<bool> ensureDeviceBundlePublished() async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return false;
 
     try {
@@ -166,7 +166,7 @@ class CryptoService {
         keyPair: signingKeys,
       );
 
-      await AppwriteService.upsertChatDeviceBundle(
+      await BackendService.upsertChatDeviceBundle(
         me.$id,
         deviceId,
         {
@@ -191,7 +191,7 @@ class CryptoService {
     String userId,
   ) async {
     try {
-      final rows = await AppwriteService.fetchChatDevicesForUser(userId);
+      final rows = await BackendService.fetchChatDevicesForUser(userId);
       for (final row in rows.rows) {
         final data = row.data;
         final identityB64 = (data['identityPublicKey'] as String?) ?? '';
@@ -287,7 +287,7 @@ class CryptoService {
     required String partnerUserId,
     required String cacheKey,
   }) async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return null;
 
     await ensureDeviceBundlePublished();

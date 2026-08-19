@@ -1,16 +1,74 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'settings/account_settings_screen.dart';
 import 'settings/privacy_settings_screen.dart';
 import 'settings/appearance_settings_screen.dart';
 import 'settings/notifications_settings_screen.dart';
 import 'settings/help_settings_screen.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../widgets/tv_focusable_action.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _actualIsAdmin = false;
+  bool _isAdminToggle = false;
+  bool _isLoadingAdmin = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAdminState();
+  }
+
+  Future<void> _loadAdminState() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user != null) {
+        final profileRes = await Supabase.instance.client
+            .from('profiles')
+            .select('is_admin')
+            .eq('id', user.id)
+            .maybeSingle();
+        if (profileRes != null && mounted) {
+          setState(() {
+            _actualIsAdmin = profileRes['is_admin'] == true;
+            _isAdminToggle = BackendService.adminModeOverride.value;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading settings admin state: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingAdmin = false;
+        });
+      }
+    }
+  }
+
+  void _toggleAdminState(bool value) {
+    setState(() {
+      _isAdminToggle = value;
+      BackendService.adminModeOverride.value = value;
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(value ? 'Switched to Admin view mode.' : 'Switched to User view mode (simulated standard user).'),
+        backgroundColor: value ? Colors.green : Colors.grey.shade800,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -88,6 +146,19 @@ class SettingsScreen extends StatelessWidget {
               );
             },
           ),
+          
+          if (!_isLoadingAdmin && _actualIsAdmin) ...[
+            const SizedBox(height: 16),
+            SwitchListTile(
+              secondary: Icon(LucideIcons.shieldAlert, color: theme.colorScheme.primary),
+              title: const Text('Admin View Mode', style: TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: const Text('Toggle between admin controls and standard user view'),
+              activeColor: Colors.pinkAccent,
+              value: _isAdminToggle,
+              onChanged: _toggleAdminState,
+            ),
+          ],
+
           const SizedBox(height: 24),
           _buildLogoutButton(context),
         ],
@@ -213,7 +284,7 @@ class SettingsScreen extends StatelessWidget {
             TextButton(
               onPressed: () async {
                 Navigator.pop(dialogContext);
-                await AppwriteService.signOut();
+                await BackendService.signOut();
                 if (context.mounted) {
                   Navigator.pushNamedAndRemoveUntil(context, '/signin', (route) => false);
                   ScaffoldMessenger.of(context).showSnackBar(

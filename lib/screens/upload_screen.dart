@@ -6,7 +6,7 @@ import 'package:video_player/video_player.dart';
 
 import '../models/upload_type.dart';
 import '../services/pending_upload_service.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 
 enum _VideoUploadStep { preview, details }
 
@@ -199,7 +199,7 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Future<void> _loadAdminStatus() async {
-    final isAdmin = await AppwriteService.isCurrentUserAdmin();
+    final isAdmin = await BackendService.isCurrentUserAdmin();
     if (mounted) {
       setState(() {
         _isAdmin = isAdmin;

@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:appwrite/appwrite.dart';
+import 'package:xapzap/models/database_models.dart' hide Row, Document;
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../services/appwrite_service.dart';
+import '../../services/backend_service.dart';
 import '../../services/auth_wrapper.dart';
 import '../../services/push_notification_service.dart';
 import '../../services/network_status_service.dart';
@@ -95,9 +95,9 @@ class _AuthFormState extends State<AuthForm> {
 
   Future<void> _redirectIfAlreadySignedIn() async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (!mounted || user == null) return;
-      final banned = await AppwriteService.isUserBanned(user.$id);
+      final banned = await BackendService.isUserBanned(user.$id);
       if (!mounted || banned) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const MainScreen()),
@@ -711,8 +711,12 @@ class _AuthFormState extends State<AuthForm> {
           SizedBox(
             height: 44,
             child: OutlinedButton(
-              onPressed:
-                  _isLoading ? null : () => setState(() => _signupStep -= 1),
+              onPressed: _isLoading
+                  ? null
+                  : () {
+                      FocusScope.of(context).unfocus();
+                      setState(() => _signupStep -= 1);
+                    },
               child: const Text('Back'),
             ),
           ),
@@ -731,14 +735,14 @@ class _AuthFormState extends State<AuthForm> {
       child: ElevatedButton(
         onPressed: _isLoading ? null : _handleSubmit,
         style: ElevatedButton.styleFrom(
-          backgroundColor: theme.colorScheme.primary,
-          foregroundColor: theme.colorScheme.onPrimary,
+          backgroundColor: Colors.blue,
+          foregroundColor: Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
         child: _isLoading
-            ? CircularProgressIndicator(
+            ? const CircularProgressIndicator(
                 valueColor: AlwaysStoppedAnimation<Color>(
-                  theme.colorScheme.onPrimary,
+                  Colors.white,
                 ),
               )
             : Text(_primaryButtonLabel()),
@@ -855,6 +859,7 @@ class _AuthFormState extends State<AuthForm> {
   }
 
   Future<void> _handleSubmit() async {
+    FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
     if (widget.mode == AuthMode.signup && _signupStep == 2) {
       if (_selectedGender == null) {
@@ -884,11 +889,11 @@ class _AuthFormState extends State<AuthForm> {
       if (widget.mode == AuthMode.signin) {
         final email = _emailController.text.trim();
         final password = _passwordController.text;
-        final emailExists = await AppwriteService.emailExists(email);
+        final emailExists = await BackendService.emailExists(email);
         if (!emailExists) {
           throw StateError('User does not exist');
         }
-        await AppwriteService.signIn(
+        await BackendService.signIn(
           email,
           password,
         );
@@ -905,7 +910,7 @@ class _AuthFormState extends State<AuthForm> {
         if (gender == null || gender.trim().isEmpty) {
           throw StateError('Gender is required');
         }
-        await AppwriteService.signUp(
+        await BackendService.signUp(
           _emailController.text.trim(),
           _passwordController.text,
           handle,
@@ -955,6 +960,13 @@ class _AuthFormState extends State<AuthForm> {
 
   String _authErrorMessage(Object error) {
     final normalized = error.toString().toLowerCase();
+    if (normalized.contains('verification required') ||
+        normalized.contains('confirm email') ||
+        normalized.contains('email_not_confirmed') ||
+        normalized.contains('email not confirmed')) {
+      return 'Verification required: Please check your email to confirm registration.';
+    }
+
     if (_isNoNetworkError(error, normalized)) {
       return 'No network';
     }
@@ -966,7 +978,7 @@ class _AuthFormState extends State<AuthForm> {
       return 'User does not exist';
     }
 
-    if (error is AppwriteException) {
+    if (error is DatabaseException) {
       final type = (error.type ?? '').toLowerCase();
       final message = (error.message ?? '').toLowerCase();
       final code = error.code ?? 0;
@@ -1003,7 +1015,8 @@ class _AuthFormState extends State<AuthForm> {
       }
     }
 
-    return widget.mode == AuthMode.signin ? 'Sign in failed' : 'Sign up failed';
+    // Return the actual error message to easily identify what is failing
+    return error.toString();
   }
 
   bool _isNoNetworkError(Object error, String normalized) {
@@ -1022,6 +1035,7 @@ class _AuthFormState extends State<AuthForm> {
   }
 
   void _switchMode() {
+    FocusScope.of(context).unfocus();
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -1111,10 +1125,11 @@ class _ForgotPasswordDialogState extends State<_ForgotPasswordDialog> {
   }
 
   Future<void> _submit() async {
+    FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSending = true);
     try {
-      await AppwriteService.sendPasswordRecovery(
+      await BackendService.sendPasswordRecovery(
         _emailController.text.trim(),
       );
       if (!mounted) return;

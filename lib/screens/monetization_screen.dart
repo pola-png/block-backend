@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/ad_revenue_service.dart';
+import 'withdrawal_settings_screen.dart';
 
 class MonetizationScreen extends StatefulWidget {
   const MonetizationScreen({super.key});
@@ -10,7 +12,7 @@ class MonetizationScreen extends StatefulWidget {
 }
 
 class _MonetizationScreenState extends State<MonetizationScreen> {
-  static const double _minimumPayoutUsd = 50.0;
+  static const double _minimumPayoutUsd = 10.0;
   static const int _payoutDayOfMonth = 27;
 
   bool _loading = true;
@@ -24,6 +26,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   List<Map<String, dynamic>> _recentEarnings = [];
   List<Map<String, dynamic>> _recentPayouts = [];
   final double _creatorShare = 0.45; // 45% to uploader
+  int? _hoveredBarIndex;
 
   @override
   void initState() {
@@ -33,7 +36,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
 
   Future<void> _loadData() async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         if (!mounted) return;
         setState(() {
@@ -42,18 +45,23 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
         });
         return;
       }
+      if (mounted) {
+        setState(() {
+          _isGuest = false;
+        });
+      }
       final totals = await AdRevenueService.getTotalsByFormat();
       final counts = await AdRevenueService.getCountsByFormat();
-      final earningsSummary = await AppwriteService.fetchCreatorEarningsSummary(
+      final earningsSummary = await BackendService.fetchCreatorEarningsSummary(
         creatorId: user.$id,
       );
       final balanceRow =
-          await AppwriteService.getLatestCreatorBalance(user.$id);
-      final recentEarnings = await AppwriteService.fetchCreatorEarningsDaily(
+          await BackendService.getLatestCreatorBalance(user.$id);
+      final recentEarnings = await BackendService.fetchCreatorEarningsDaily(
         creatorId: user.$id,
-        limit: 5,
+        limit: 7,
       );
-      final recentPayouts = await AppwriteService.fetchCreatorPayouts(
+      final recentPayouts = await BackendService.fetchCreatorPayouts(
         creatorId: user.$id,
         limit: 5,
       );
@@ -91,8 +99,13 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
         }).toList(growable: false);
         _loading = false;
       });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      debugPrint('Error loading monetization summary: $e');
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -113,11 +126,24 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Monetize'),
+        title: const Text('Monetization'),
         backgroundColor: theme.colorScheme.surface,
         foregroundColor: theme.colorScheme.onSurface,
-        elevation: 0,
+        elevation: 0.5,
         surfaceTintColor: Colors.transparent,
+        actions: [
+          if (!_isGuest)
+            IconButton(
+              icon: const Icon(Icons.wallet),
+              tooltip: 'Withdraw Coordinates',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const WithdrawalSettingsScreen()),
+                );
+              },
+            ),
+        ],
       ),
       body: Container(
         width: double.infinity,
@@ -132,15 +158,17 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
                       children: [
                         _buildHero(theme),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 16),
+                        _buildEarningsWaveCard(theme),
+                        const SizedBox(height: 16),
                         _buildPayoutRules(theme),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 16),
                         _buildBreakdown(theme),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 16),
                         _buildRecentEarnings(theme),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 16),
                         _buildPayouts(theme),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 16),
                         _buildLegend(theme),
                       ],
                     ),
@@ -202,18 +230,28 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   Widget _buildHero(ThemeData theme) {
     final balance = _currentBalanceUsd;
     final ready = _isPayoutReady;
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            theme.colorScheme.primary,
-            theme.colorScheme.primaryContainer,
-          ],
+          colors: isDark
+              ? [const Color(0xFF1E293B), const Color(0xFF0F172A)] // Slate 800 -> 900
+              : [const Color(0xFFF1F5F9), Colors.white], // Slate 100 -> White
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDark ? 0.3 : 0.03),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          )
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -226,82 +264,64 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Total earnings',
+                      'TOTAL REVENUE EARNED',
                       style: theme.textTheme.labelLarge?.copyWith(
-                        color: Colors.white.withOpacity(0.88),
-                        fontWeight: FontWeight.w700,
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 11,
+                        letterSpacing: 1.2,
                       ),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '\$${_creatorEarningsUsd.toStringAsFixed(2)}',
+                      '\$${(_creatorEarningsUsd + (_creatorBalanceUsd ?? 0)).toStringAsFixed(3)}',
                       style: theme.textTheme.displaySmall?.copyWith(
-                        color: Colors.white,
+                        color: theme.colorScheme.onSurface,
                         fontWeight: FontWeight.w900,
-                        fontSize: 34,
+                        fontSize: 36,
+                        letterSpacing: -1,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 8),
                     Text(
-                      'Creator earnings + referral earnings',
+                      'Aggregated Ad, Referral & Job yields',
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: Colors.white.withOpacity(0.9),
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Tracking $_earningsRowCount earning records',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white.withOpacity(0.82),
-                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
                 ),
               ),
-              _statusPill(
-                theme,
-                ready ? 'Ready for payout' : 'Building balance',
-                ready ? Colors.greenAccent : Colors.white,
+              IconButton(
+                icon: const Icon(Icons.account_balance_wallet_rounded, size: 28, color: Colors.pinkAccent),
+                tooltip: 'Payout Settings',
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const WithdrawalSettingsScreen()),
+                  );
+                },
               ),
             ],
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 20),
           Row(
             children: [
               Expanded(
                 child: _heroMiniStat(
                   theme,
-                  'Pending balance',
-                  '\$${balance.toStringAsFixed(2)}',
+                  'Pending Balance',
+                  '\$${balance.toStringAsFixed(3)}',
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _heroMiniStat(
                   theme,
-                  'Referral',
-                  '\$${_referralEarningsUsd.toStringAsFixed(2)}',
+                  'Referrals Yield',
+                  '\$${_referralEarningsUsd.toStringAsFixed(3)}',
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              _heroAction(
-                theme,
-                icon: Icons.campaign_outlined,
-                label: 'Ads manager',
-                onTap: () => Navigator.of(context).pushNamed('/boosts'),
-              ),
-              const SizedBox(width: 10),
-              _heroAction(
-                theme,
-                icon: Icons.refresh,
-                label: 'Refresh',
-                onTap: _loadData,
               ),
             ],
           ),
@@ -310,22 +330,141 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
     );
   }
 
+  Widget _buildEarningsWaveCard(ThemeData theme) {
+    if (_recentEarnings.isEmpty) return const SizedBox.shrink();
+    
+    final isDark = theme.brightness == Brightness.dark;
+    final maxVal = _recentEarnings
+        .map((e) => _toDouble(e['creatorEarningsUsd']))
+        .fold(0.001, (prev, curr) => curr > prev ? curr : prev);
+        
+    final hIndex = _hoveredBarIndex;
+    final hoveredData = hIndex != null ? _recentEarnings[hIndex] : null;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDark ? 0.2 : 0.02),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          )
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "Earnings Waveform",
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              if (hoveredData != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    "${hoveredData['reportDate']}: \$${_toDouble(hoveredData['creatorEarningsUsd']).toStringAsFixed(3)}",
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                )
+              else
+                Text(
+                  "Tap columns to scan metrics",
+                  style: TextStyle(fontSize: 10, color: theme.colorScheme.onSurfaceVariant),
+                )
+            ],
+          ),
+          const SizedBox(height: 22),
+          SizedBox(
+            height: 120,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: List.generate(_recentEarnings.length, (idx) {
+                final val = _toDouble(_recentEarnings[idx]['creatorEarningsUsd']);
+                final ratio = (val / maxVal).clamp(0.12, 1.0);
+                final isHovered = hIndex == idx;
+                
+                return Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: (_) {
+                      setState(() {
+                        _hoveredBarIndex = idx;
+                      });
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Container(
+                              alignment: Alignment.bottomCenter,
+                              child: FractionallySizedBox(
+                                heightFactor: ratio,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        theme.colorScheme.primary,
+                                        isHovered ? Colors.cyan.shade400 : theme.colorScheme.primary.withOpacity(0.5),
+                                      ],
+                                      begin: Alignment.bottomCenter,
+                                      end: Alignment.topCenter,
+                                    ),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _recentEarnings[idx]['reportDate']?.toString().split('-').last ?? '',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: isHovered ? FontWeight.bold : FontWeight.normal,
+                              color: isHovered ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+                            ),
+                          )
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
   Widget _buildPayoutRules(ThemeData theme) {
     final balance = _currentBalanceUsd;
     final ready = _isPayoutReady;
+    final isDark = theme.brightness == Brightness.dark;
+
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            theme.colorScheme.surface,
-            theme.colorScheme.surfaceVariant.withOpacity(0.35),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: theme.dividerColor),
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -339,67 +478,66 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                   children: [
                     Text(
                       'Payout rules',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        fontSize: 20,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Monthly payouts run on the 27th.',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontSize: 16,
+                      'Monthly payout releases run on the 27th.',
+                      style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
                 ),
               ),
-              _buildRuleChip(
-                theme,
-                ready ? 'Eligible' : 'Carry over',
-                ready ? Colors.green : theme.colorScheme.primary,
-              ),
+              if (ready)
+                _buildRuleChip(
+                  theme,
+                  'Eligible',
+                  Colors.green,
+                ),
             ],
           ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
+          const SizedBox(height: 16),
+          Row(
             children: [
-              _buildRuleStat(
-                theme,
-                'Minimum payout',
-                '\$${_minimumPayoutUsd.toStringAsFixed(2)}',
+              Expanded(
+                child: _buildRuleStat(
+                  theme,
+                  'Minimum Payout',
+                  '\$${_minimumPayoutUsd.toStringAsFixed(2)}',
+                ),
               ),
-              _buildRuleStat(
-                theme,
-                'Next payout date',
-                _nextPayoutDate.day.toString(),
-                suffix: _monthLabel(_nextPayoutDate),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildRuleStat(
+                  theme,
+                  'Payout Date',
+                  _nextPayoutDate.day.toString(),
+                  suffix: _monthLabel(_nextPayoutDate),
+                ),
               ),
-              _buildRuleStat(
-                theme,
-                'Current balance',
-                '\$${balance.toStringAsFixed(2)}',
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildRuleStat(
+                  theme,
+                  'Current Balance',
+                  '\$${balance.toStringAsFixed(3)}',
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
           Text(
             ready
                 ? 'Your balance is above the minimum payout threshold. It will be included in the monthly payout run.'
                 : 'Your balance stays on your account and rolls forward until it reaches the minimum payout threshold.',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'The payout history below shows each monthly payout.',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+              color: theme.colorScheme.onSurface,
             ),
           ),
         ],
@@ -419,30 +557,31 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
         child: const Text('No earnings recorded yet.'),
       );
     }
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: theme.dividerColor),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Recent earnings',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w700,
+            'Daily logs breakdown',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           ..._recentEarnings.map((row) {
             final reportDate = row['reportDate']?.toString() ?? '';
             final placement = row['placement']?.toString() ?? '';
             final earnings = _toDouble(row['creatorEarningsUsd']);
             final impressions = row['impressions']?.toString() ?? '0';
             return Padding(
-              padding: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.only(bottom: 12),
               child: Row(
                 children: [
                   Expanded(
@@ -468,9 +607,10 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                     ),
                   ),
                   Text(
-                    '\$${earnings.toStringAsFixed(2)}',
+                    '\$${earnings.toStringAsFixed(3)}',
                     style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.primary,
                     ),
                   ),
                 ],
@@ -483,16 +623,18 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   }
 
   Widget _buildPayouts(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
     if (_recentPayouts.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: theme.colorScheme.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: theme.dividerColor),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
         ),
-        child: const Text(
-          'No payout history yet. Balances roll over until they reach \$50.00.',
+        child: Text(
+          'No payout history yet. Balances roll over until they reach \$${_minimumPayoutUsd.toStringAsFixed(2)}.',
+          style: const TextStyle(fontSize: 12),
         ),
       );
     }
@@ -500,27 +642,26 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: theme.dividerColor),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             'Payout history',
-            style: theme.textTheme.titleMedium?.copyWith(
+            style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w800,
-              fontSize: 18,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           ..._recentPayouts.map((row) {
             final amount = _toDouble(row['amountUsd']);
             final status = row['status']?.toString() ?? 'requested';
             final requestedAt = row['requestedAt']?.toString() ?? '';
             final method = row['payoutMethod']?.toString() ?? '';
             return Padding(
-              padding: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.only(bottom: 12),
               child: Row(
                 children: [
                   Expanded(
@@ -529,7 +670,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                       children: [
                         Text(
                           requestedAt.isEmpty
-                              ? 'Payout'
+                              ? 'Payout request'
                               : 'Requested $requestedAt',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.w700,
@@ -562,10 +703,10 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
 
   Widget _buildRuleChip(ThemeData theme, String label, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: color.withOpacity(0.25)),
       ),
       child: Text(
@@ -573,6 +714,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
         style: theme.textTheme.bodySmall?.copyWith(
           fontWeight: FontWeight.w800,
           color: color,
+          fontSize: 10,
         ),
       ),
     );
@@ -584,12 +726,13 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
     String value, {
     String? suffix,
   }) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      width: 160,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceVariant.withOpacity(0.25),
+        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.35),
         borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -599,14 +742,15 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
               fontWeight: FontWeight.w700,
+              fontSize: 9,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             value,
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.w900,
-              fontSize: 18,
+              fontSize: 14,
             ),
           ),
           if (suffix != null) ...[
@@ -615,6 +759,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
               suffix,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
+                fontSize: 9,
               ),
             ),
           ],
@@ -635,24 +780,24 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
         child: const Text('No creator earnings by format yet.'),
       );
     }
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: theme.dividerColor),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             'Earnings by format',
-            style: theme.textTheme.titleMedium?.copyWith(
+            style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w800,
-              fontSize: 18,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           ..._countsByFormat.entries.map((entry) {
             final format = entry.key;
             final count = entry.value;
@@ -670,7 +815,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                           format,
                           style: theme.textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.w800,
-                            fontSize: 16,
+                            fontSize: 14,
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -678,7 +823,7 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                           '$count eligible impressions',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
-                            fontSize: 13,
+                            fontSize: 12,
                           ),
                         ),
                       ],
@@ -688,10 +833,11 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Text(
-                        '\$${creatorEarnings.toStringAsFixed(2)}',
+                        '\$${creatorEarnings.toStringAsFixed(3)}',
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.w900,
-                          fontSize: 16,
+                          fontSize: 14,
+                          color: theme.colorScheme.primary,
                         ),
                       ),
                     ],
@@ -706,31 +852,35 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   }
 
   Widget _buildLegend(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: theme.dividerColor),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             'How payouts work',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w700,
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(height: 6),
-          const Text('• Ads run before Watch/Reels videos.'),
-          const Text('• We calculate ad revenue per impression.'),
-          const Text(
-              '• 45% of eligible ad revenue goes into your creator earnings.'),
+          const SizedBox(height: 10),
+          const Text('• Ads run before Watch/Reels videos.', style: TextStyle(fontSize: 12)),
+          const SizedBox(height: 4),
+          const Text('• We calculate ad revenue per impression.', style: TextStyle(fontSize: 12)),
+          const SizedBox(height: 4),
+          const Text('• 45% of eligible ad revenue goes into your creator earnings.', style: TextStyle(fontSize: 12)),
+          const SizedBox(height: 10),
           Text(
             'Estimates here reflect recorded ad revenue; actual payouts depend on live ad rates and platform reports.',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
+              fontSize: 10.5,
             ),
           ),
         ],
@@ -739,12 +889,13 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   }
 
   Widget _heroMiniStat(ThemeData theme, String label, String value) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white.withOpacity(0.14)),
+        color: isDark ? Colors.white.withOpacity(0.04) : theme.colorScheme.surfaceContainerHighest.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -752,16 +903,18 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
           Text(
             label,
             style: theme.textTheme.bodySmall?.copyWith(
-              color: Colors.white.withOpacity(0.78),
+              color: theme.colorScheme.onSurfaceVariant,
               fontWeight: FontWeight.w600,
+              fontSize: 10,
             ),
           ),
           const SizedBox(height: 4),
           Text(
             value,
             style: theme.textTheme.titleMedium?.copyWith(
-              color: Colors.white,
+              color: theme.colorScheme.onSurface,
               fontWeight: FontWeight.w800,
+              fontSize: 15,
             ),
           ),
         ],
@@ -771,56 +924,18 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
 
   Widget _statusPill(ThemeData theme, String label, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.25)),
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.2)),
       ),
       child: Text(
         label,
         style: theme.textTheme.bodySmall?.copyWith(
           fontWeight: FontWeight.w800,
           color: color == Colors.white ? Colors.white : color,
-        ),
-      ),
-    );
-  }
-
-  Widget _heroAction(
-    ThemeData theme, {
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white.withOpacity(0.14)),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: Colors.white, size: 18),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  label,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
-          ),
+          fontSize: 9.5,
         ),
       ),
     );

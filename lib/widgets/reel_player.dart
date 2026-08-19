@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'dart:io' show Platform;
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
@@ -9,7 +9,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import '../models/post.dart';
 import '../screens/comment_screen.dart';
 import '../screens/profile_screen.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/native_ad_preload_service.dart';
 import '../services/storage_service.dart';
 import '../utils/share_utils.dart';
@@ -284,7 +284,7 @@ class _ReelPlayerState extends State<ReelPlayer>
   }
 
   Future<void> _initUserState() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     if (user == null) {
       setState(() {
@@ -296,8 +296,8 @@ class _ReelPlayerState extends State<ReelPlayer>
     bool isLiked = false;
     bool isSaved = false;
     try {
-      isLiked = await AppwriteService.isPostLikedBy(user.$id, widget.post.id);
-      isSaved = await AppwriteService.isPostSavedBy(user.$id, widget.post.id);
+      isLiked = await BackendService.isPostLikedBy(user.$id, widget.post.id);
+      isSaved = await BackendService.isPostSavedBy(user.$id, widget.post.id);
     } catch (_) {}
     if (!mounted) return;
     setState(() {
@@ -318,7 +318,7 @@ class _ReelPlayerState extends State<ReelPlayer>
       return;
     }
     try {
-      final profile = await AppwriteService.getProfileByUserId(authorId);
+      final profile = await BackendService.getProfileByUserId(authorId);
       final displayName = (profile?.data['displayName'] as String?)?.trim();
       final avatar = await _resolveAvatarUrl(
         ((profile?.data['avatarUrl'] as String?)?.trim().isNotEmpty == true)
@@ -343,8 +343,8 @@ class _ReelPlayerState extends State<ReelPlayer>
   void _subscribePostRealtime() {
     try {
       final channel =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postsCollectionId}.documents';
-      _postSub = AppwriteService.realtime.subscribe([channel]);
+          'databases.${BackendService.databaseId}.collections.${BackendService.postsCollectionId}.documents';
+      _postSub = BackendService.realtime.subscribe([channel]);
       _postSub?.stream.listen((event) {
         if (!mounted || event.events.isEmpty) return;
         final payload = event.payload;
@@ -501,9 +501,9 @@ class _ReelPlayerState extends State<ReelPlayer>
     });
     try {
       if (targetLike) {
-        await AppwriteService.likePost(widget.post.id);
+        await BackendService.likePost(widget.post.id);
       } else {
-        await AppwriteService.unlikePost(widget.post.id);
+        await BackendService.unlikePost(widget.post.id);
       }
     } catch (_) {
       if (!mounted) return;
@@ -540,7 +540,7 @@ class _ReelPlayerState extends State<ReelPlayer>
       if (_repostCount < 0) _repostCount = 0;
     });
     try {
-      await AppwriteService.repostPost(widget.post.id);
+      await BackendService.repostPost(widget.post.id);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -565,9 +565,9 @@ class _ReelPlayerState extends State<ReelPlayer>
     setState(() => _isSaved = targetSave);
     try {
       if (targetSave) {
-        await AppwriteService.savePost(widget.post.id);
+        await BackendService.savePost(widget.post.id);
       } else {
-        await AppwriteService.unsavePost(widget.post.id);
+        await BackendService.unsavePost(widget.post.id);
       }
     } catch (_) {
       if (!mounted) return;
@@ -577,7 +577,7 @@ class _ReelPlayerState extends State<ReelPlayer>
 
   void _sharePost() {
     setState(() => _shareCount++);
-    AppwriteService.incrementPostShares(widget.post.id, 1);
+    BackendService.incrementPostShares(widget.post.id, 1);
     ShareUtils.sharePost(
       postId: widget.post.id,
       username: widget.post.username,
@@ -680,7 +680,7 @@ class _ReelPlayerState extends State<ReelPlayer>
               final navigator = Navigator.of(dcontext);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.reportPost(
+                await BackendService.reportPost(
                   widget.post.id,
                   'Inappropriate content',
                 );
@@ -729,7 +729,7 @@ class _ReelPlayerState extends State<ReelPlayer>
               final navigator = Navigator.of(dcontext);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.blockUser(targetUserId);
+                await BackendService.blockUser(targetUserId);
                 if (!mounted) return;
                 navigator.pop();
                 messenger.showSnackBar(

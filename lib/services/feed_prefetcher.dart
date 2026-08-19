@@ -1,7 +1,7 @@
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../services/feed_cache.dart';
 import '../services/avatar_cache.dart';
@@ -17,10 +17,10 @@ class FeedPrefetcher {
     _started = true;
 
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       _sessionSeed = DateTime.now().millisecondsSinceEpoch;
       final followingIds = user != null
-          ? await AppwriteService.getFollowingUserIds(user.$id)
+          ? await BackendService.getFollowingUserIds(user.$id)
           : <String>[];
 
       await Future.wait([
@@ -36,12 +36,12 @@ class FeedPrefetcher {
     if (FeedCache.hasForYou) return;
 
     final feedPage = userId == null
-        ? await AppwriteService.fetchPostsPage(
+        ? await BackendService.fetchPostsPage(
             limit: 40,
             applyFeedRanking: true,
             sessionSeed: _sessionSeed,
           )
-        : await AppwriteService.fetchForYouFeedPage(
+        : await BackendService.fetchForYouFeedPage(
             userId: userId,
             limit: 40,
             sessionSeed: _sessionSeed,
@@ -51,7 +51,7 @@ class FeedPrefetcher {
 
     if (userId != null && userId.isNotEmpty) {
       try {
-        await AppwriteService.prefetchUserReactionsAndFollows(
+        await BackendService.prefetchUserReactionsAndFollows(
           userId: userId,
           postIds: docs.map((d) => d.$id).toList(),
           authorIds: docs
@@ -156,7 +156,7 @@ class FeedPrefetcher {
   static Future<void> _preloadFollowing(List<String> followingIds) async {
     if (FeedCache.hasFollowing) return;
 
-    final feedPage = await AppwriteService.fetchPostsByUserIdsPage(
+    final feedPage = await BackendService.fetchPostsByUserIdsPage(
       followingIds,
       limit: 40,
       sessionSeed: _sessionSeed,

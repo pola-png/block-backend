@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 
 class SeriesHeaderEditorScreen extends StatefulWidget {
@@ -41,7 +41,7 @@ class _SeriesHeaderEditorScreenState extends State<SeriesHeaderEditorScreen> {
   Future<void> _load() async {
     setState(() => _isLoading = true);
     try {
-      final data = await AppwriteService.fetchSeriesHeaderData(
+      final data = await BackendService.fetchSeriesHeaderData(
         userId: widget.ownerUserId,
         seriesTitle: widget.seriesTitle,
         contentType: widget.contentType,
@@ -95,7 +95,7 @@ class _SeriesHeaderEditorScreenState extends State<SeriesHeaderEditorScreen> {
       final previewUrl = stored.startsWith('http')
           ? stored
           : await StorageService.getImageDisplayUrl(stored);
-      await AppwriteService.updateSeriesHeader(
+      await BackendService.updateSeriesHeader(
         userId: widget.ownerUserId,
         seriesTitle: widget.seriesTitle,
         contentType: widget.contentType,
@@ -130,7 +130,7 @@ class _SeriesHeaderEditorScreenState extends State<SeriesHeaderEditorScreen> {
   Future<void> _saveHeaderText() async {
     setState(() => _isSaving = true);
     try {
-      await AppwriteService.updateSeriesHeader(
+      await BackendService.updateSeriesHeader(
         userId: widget.ownerUserId,
         seriesTitle: widget.seriesTitle,
         contentType: widget.contentType,

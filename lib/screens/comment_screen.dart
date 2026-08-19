@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
-import 'package:appwrite/models.dart' as aw;
+
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -10,7 +10,7 @@ import 'package:timeago/timeago.dart' as timeago;
 import '../models/post.dart';
 import '../screens/hashtag_feed_screen.dart';
 import '../screens/profile_screen.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/taggable_text.dart';
 import '../widgets/tv_focusable_action.dart';
@@ -110,9 +110,9 @@ class _CommentScreenState extends State<CommentScreen> {
 
   void _subscribeComments() {
     final channel =
-        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.commentsCollectionId}.documents';
+        'databases.${BackendService.databaseId}.collections.${BackendService.commentsCollectionId}.documents';
     _commentsSub?.close();
-    _commentsSub = AppwriteService.realtime.subscribe([channel]);
+    _commentsSub = BackendService.realtime.subscribe([channel]);
     _commentsSub?.stream.listen((event) {
       final payload = event.payload;
       final data = payload['data'];
@@ -123,9 +123,9 @@ class _CommentScreenState extends State<CommentScreen> {
     });
 
     final likesChannel =
-        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.commentLikesCollectionId}.documents';
+        'databases.${BackendService.databaseId}.collections.${BackendService.commentLikesCollectionId}.documents';
     _commentLikesSub?.close();
-    _commentLikesSub = AppwriteService.realtime.subscribe([likesChannel]);
+    _commentLikesSub = BackendService.realtime.subscribe([likesChannel]);
     _commentLikesSub?.stream.listen((event) {
       final payload = event.payload;
       final data = payload['data'];
@@ -142,7 +142,7 @@ class _CommentScreenState extends State<CommentScreen> {
   }
 
   Future<void> _loadCurrentUser() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (user == null) {
       if (!mounted) return;
       setState(() {
@@ -152,7 +152,7 @@ class _CommentScreenState extends State<CommentScreen> {
       return;
     }
 
-    final prof = await AppwriteService.getProfileByUserId(user.$id);
+    final prof = await BackendService.getProfileByUserId(user.$id);
     String? avatar = prof?.data['avatarUrl'] as String?;
     if (avatar != null && avatar.isNotEmpty && !avatar.startsWith('http')) {
       try {
@@ -173,7 +173,7 @@ class _CommentScreenState extends State<CommentScreen> {
       setState(() => _loading = true);
     }
     try {
-      final docs = await AppwriteService.fetchComments(widget.post.id);
+      final docs = await BackendService.fetchComments(widget.post.id);
       if (!mounted) return;
 
       _rootComments.clear();
@@ -205,7 +205,7 @@ class _CommentScreenState extends State<CommentScreen> {
       ..._rootComments.map((row) => row.$id),
       ..._repliesByParent.values.expand((rows) => rows.map((row) => row.$id)),
     ];
-    final likedIds = await AppwriteService.fetchLikedCommentIds(
+    final likedIds = await BackendService.fetchLikedCommentIds(
       userId,
       commentIds: commentIds,
     );
@@ -361,7 +361,7 @@ class _CommentScreenState extends State<CommentScreen> {
       } else {
         unawaited(() async {
           try {
-            final prof = await AppwriteService.getProfileByUserId(userId);
+            final prof = await BackendService.getProfileByUserId(userId);
             if (prof != null) {
               final v =
                   prof.data['isVerified'] == true || prof.data['verified'] == true;
@@ -671,17 +671,17 @@ class _CommentScreenState extends State<CommentScreen> {
       final parentId = widget.parentComment?.$id ?? _replyToCommentId;
       final aw.Row doc;
       if (parentId != null && parentId.isNotEmpty) {
-        doc = await AppwriteService.createReplyComment(
+        doc = await BackendService.createReplyComment(
           widget.post.id,
           parentId,
           content,
         );
-        unawaited(AppwriteService.incrementCommentReplies(parentId, 1));
+        unawaited(BackendService.incrementCommentReplies(parentId, 1));
       } else {
-        doc = await AppwriteService.createComment(widget.post.id, content);
+        doc = await BackendService.createComment(widget.post.id, content);
       }
 
-      unawaited(AppwriteService.incrementPostComments(widget.post.id, 1));
+      unawaited(BackendService.incrementPostComments(widget.post.id, 1));
 
       if (!mounted) return;
       setState(() {
@@ -793,9 +793,9 @@ class _CommentScreenState extends State<CommentScreen> {
 
     try {
       if (isLiked) {
-        await AppwriteService.unlikeComment(commentId);
+        await BackendService.unlikeComment(commentId);
       } else {
-        await AppwriteService.likeComment(commentId);
+        await BackendService.likeComment(commentId);
       }
     } catch (e) {
       if (!mounted) return;
@@ -882,8 +882,8 @@ class _CommentScreenState extends State<CommentScreen> {
     if (newText == null || newText.isEmpty) return;
 
     try {
-      final updated = await AppwriteService.updateRow(
-        AppwriteService.commentsCollectionId,
+      final updated = await BackendService.updateRow(
+        BackendService.commentsCollectionId,
         doc.$id,
         <String, dynamic>{'content': newText},
       );
@@ -935,10 +935,10 @@ class _CommentScreenState extends State<CommentScreen> {
 
     final parentId = doc.data['parentCommentId'] as String?;
     try {
-      await AppwriteService.deleteComment(doc.$id);
-      unawaited(AppwriteService.incrementPostComments(widget.post.id, -1));
+      await BackendService.deleteComment(doc.$id);
+      unawaited(BackendService.incrementPostComments(widget.post.id, -1));
       if (parentId != null && parentId.isNotEmpty) {
-        unawaited(AppwriteService.incrementCommentReplies(parentId, -1));
+        unawaited(BackendService.incrementCommentReplies(parentId, -1));
       }
       if (!mounted) return;
       setState(() {
@@ -971,7 +971,7 @@ class _CommentScreenState extends State<CommentScreen> {
   Future<void> _handleMentionTap(String usernameToken) async {
     final handle = usernameToken.replaceAll('@', '').trim();
     if (handle.isEmpty) return;
-    final prof = await AppwriteService.getProfileByUsername(handle);
+    final prof = await BackendService.getProfileByUsername(handle);
     if (!mounted) return;
     if (prof == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -999,7 +999,7 @@ class _CommentScreenState extends State<CommentScreen> {
     if (userId == null || userId.isEmpty) {
       final username = (data['username'] as String? ?? '').trim();
       if (username.isNotEmpty) {
-        final prof = await AppwriteService.getProfileByUsername(username);
+        final prof = await BackendService.getProfileByUsername(username);
         if (prof != null) {
           userId = prof.data['userId'] as String? ?? prof.$id;
         }

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show Supabase;
+import 'config/environment.dart';
 import 'dart:async';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -24,10 +26,9 @@ import 'screens/main_screen.dart';
 import 'screens/terms_of_service_screen.dart';
 import 'screens/auth/reset_password_screen.dart';
 import 'services/auth_wrapper.dart';
-import 'services/appwrite_service.dart';
+import 'services/backend_service.dart';
 import 'services/firebase_service.dart';
 import 'services/play_store_update_service.dart';
-import 'services/storage_service.dart';
 import 'services/chat_message_cache.dart';
 import 'services/chat_preview_cache.dart';
 import 'services/chat_prefetch_service.dart';
@@ -90,7 +91,13 @@ Future<void> _bootstrapCriticalServices() async {
     await dotenv.load(fileName: ".env");
   } catch (_) {}
   try {
-    await AppwriteService.initialize();
+    await Supabase.initialize(
+      url: Environment.supabaseUrl,
+      anonKey: Environment.supabaseAnonKey,
+    );
+  } catch (_) {}
+  try {
+    await BackendService.initialize();
   } catch (_) {}
 }
 
@@ -111,9 +118,6 @@ Future<void> _bootstrapBackgroundServices() async {
     await PostViewRetryQueue.initialize();
   } catch (_) {}
   try {
-    await StorageService.initialize();
-  } catch (_) {}
-  try {
     await AvatarCache.initialize();
   } catch (_) {}
   try {
@@ -125,13 +129,20 @@ Future<void> _bootstrapBackgroundServices() async {
   if (!kIsWeb && !DeviceModeService.isTv) {
     try {
       await MobileAds.instance.initialize();
+      if (kDebugMode) {
+        await MobileAds.instance.updateRequestConfiguration(
+          RequestConfiguration(
+            testDeviceIds: ['93B5FC3B503A1A45170BFE3370D4426F'],
+          ),
+        );
+      }
     } catch (_) {}
   }
   if (!kIsWeb && !DeviceModeService.isTv) {
     unawaited(NativeAdPreloadService.warmupFast(maxSlotIndex: 2));
   }
   unawaited(PostViewRetryQueue.flushPending());
-  unawaited(AppwriteService.processNotificationQueue(limit: 5));
+  unawaited(BackendService.processNotificationQueue(limit: 5));
   // Start preloading the home feeds in the background so that
   // the HomeScreen can render instantly when opened.
   // On web we skip this to reduce first-load work and rely on

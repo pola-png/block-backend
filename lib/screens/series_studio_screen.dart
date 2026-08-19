@@ -1,9 +1,9 @@
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
 
 import '../models/post.dart';
 import '../models/upload_type.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import 'episode_editor_screen.dart';
 import 'episode_media_editor_screen.dart';
@@ -42,7 +42,7 @@ class _SeriesStudioScreenState extends State<SeriesStudioScreen> {
   Future<void> _loadEpisodes() async {
     setState(() => _isLoading = true);
     try {
-      final rows = await AppwriteService.fetchSeriesEpisodeRows(
+      final rows = await BackendService.fetchSeriesEpisodeRows(
         userId: widget.ownerUserId,
         seriesTitle: widget.seriesTitle,
         contentType: widget.contentType,
@@ -132,7 +132,7 @@ class _SeriesStudioScreenState extends State<SeriesStudioScreen> {
   Future<void> _saveOrder() async {
     setState(() => _isSavingOrder = true);
     try {
-      await AppwriteService.reorderSeriesEpisodes(
+      await BackendService.reorderSeriesEpisodes(
         postIdsInOrder: _episodes.map((item) => item.rowId).toList(),
       );
       if (!mounted) return;
@@ -413,7 +413,7 @@ class _SeriesStudioScreenState extends State<SeriesStudioScreen> {
 
   Future<void> _toggleArchive(_SeriesEpisodeItem item) async {
     try {
-      await AppwriteService.archivePost(
+      await BackendService.archivePost(
         item.rowId,
         archived: !item.isArchived,
       );
@@ -468,7 +468,7 @@ class _SeriesStudioScreenState extends State<SeriesStudioScreen> {
           await StorageService.deleteFile(item.rawThumbnailPath!);
         } catch (_) {}
       }
-      await AppwriteService.deletePost(item.rowId);
+      await BackendService.deletePost(item.rowId);
       await _loadEpisodes();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

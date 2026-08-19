@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 
 class FeedExposureService {
   static const String _prefsKeyPrefix = 'feed_recent_exposures_v2';
@@ -12,7 +12,7 @@ class FeedExposureService {
 
   static Future<String> _scopeKey() async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       final userId = user?.$id.trim();
       if (userId != null && userId.isNotEmpty) {
         return 'user_$userId';
