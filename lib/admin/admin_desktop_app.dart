@@ -1298,35 +1298,157 @@ class _AdminCreatorToolsPanelState extends State<AdminCreatorToolsPanel> {
                   ),
                 );
               }
-              return _AdminPanelCard(
-                title: 'Creator support summary',
-                child: Column(
-                  children: [
-                    _kvRow('Creator id', data.creatorId),
-                    _kvRow('Display name', _displayName(data.profile)),
-                    _kvRow(
-                      'Username',
-                      '@${(data.profile.data['username'] ?? '').toString()}',
+              final isCheater = data.profile.data['is_cheater'] == true;
+              final taskCount = data.profile.data['task_count'] as int? ?? 0;
+
+              return Column(
+                children: [
+                  _AdminPanelCard(
+                    title: 'Creator Support Summary',
+                    child: Column(
+                      children: [
+                        _kvRow('Creator ID', data.creatorId),
+                        _kvRow('Display name', _displayName(data.profile)),
+                        _kvRow(
+                          'Username',
+                          '@${(data.profile.data['username'] ?? '').toString()}',
+                        ),
+                        _kvRow(
+                          'Completed Tasks (Watch/Review)',
+                          '$taskCount tasks completed',
+                        ),
+                        _kvRow(
+                          'Creator earnings USD',
+                          '${data.earningsSummary['creatorEarningsUsd'] ?? 0}',
+                        ),
+                        _kvRow(
+                          'Available balance USD',
+                          '${data.balance?.data['availableBalanceUsd'] ?? 0}',
+                        ),
+                        _kvRow(
+                          'Status Flag',
+                          isCheater ? '⚠️ BANNED / FLAGGED FOR CHEATING' : '✅ Clean Profile',
+                        ),
+                        _kvRow('Referral count', '${data.referralCount}'),
+                      ],
                     ),
-                    _kvRow(
-                      'Tracked impressions',
-                      '${_intValue(data.earningsSummary['impressions'])}',
+                  ),
+                  const SizedBox(height: 16),
+                  _AdminPanelCard(
+                    title: 'Modify Account Balance directly',
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add Funds (\$1.00)'),
+                            onPressed: () async {
+                              await BackendService.adjustUserBalance(data.creatorId, 1.0);
+                              setState(() {
+                                _future = _loadCreator(data.creatorId);
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
+                            icon: const Icon(Icons.remove),
+                            label: const Text('Deduct Funds (\$1.00)'),
+                            onPressed: () async {
+                              await BackendService.adjustUserBalance(data.creatorId, -1.0);
+                              setState(() {
+                                _future = _loadCreator(data.creatorId);
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 12),
+                          OutlinedButton(
+                            child: const Text('Custom Adjustment'),
+                            onPressed: () async {
+                              final amountStr = await _promptForText(
+                                context,
+                                title: 'Custom Balance Adjustment',
+                                label: 'Enter positive value to add or negative to deduct (e.g. -2.50 or 5.00)',
+                              );
+                              if (amountStr != null) {
+                                final double? val = double.tryParse(amountStr);
+                                if (val != null) {
+                                  await BackendService.adjustUserBalance(data.creatorId, val);
+                                  setState(() {
+                                    _future = _loadCreator(data.creatorId);
+                                  });
+                                }
+                              }
+                            },
+                          ),
+                        ],
+                      ),
                     ),
-                    _kvRow(
-                      'Creator earnings USD',
-                      '${data.earningsSummary['creatorEarningsUsd'] ?? 0}',
+                  ),
+                  const SizedBox(height: 16),
+                  _AdminPanelCard(
+                    title: 'Fraud Control & Suspicious Activity Alerts',
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          if (!isCheater) ...[
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                              icon: const Icon(Icons.gavel),
+                              label: const Text('Mark as Cheater & Fine User'),
+                              onPressed: () async {
+                                final reason = await _promptForText(
+                                  context,
+                                  title: 'Cheating/Fraud Penalty Reason',
+                                  label: 'Describe the suspicious/fake tasks completed',
+                                  initialValue: 'Fraudulent/Fake video task completions detected.',
+                                );
+                                if (reason == null) return;
+
+                                final deductionStr = await _promptForText(
+                                  context,
+                                  title: 'Deduction Amount',
+                                  label: 'Enter penalty USD amount to deduct from their balance',
+                                  initialValue: '2.00',
+                                );
+                                final double deduction = double.tryParse(deductionStr ?? '0.0') ?? 0.0;
+
+                                await BackendService.markUserCheater(
+                                  data.creatorId,
+                                  isCheater: true,
+                                  deduction: deduction,
+                                  reason: reason,
+                                );
+
+                                setState(() {
+                                  _future = _loadCreator(data.creatorId);
+                                });
+                              },
+                            ),
+                          ] else ...[
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Remove Cheater Flag / Pardon'),
+                              onPressed: () async {
+                                await BackendService.markUserCheater(
+                                  data.creatorId,
+                                  isCheater: false,
+                                );
+                                setState(() {
+                                  _future = _loadCreator(data.creatorId);
+                                });
+                              },
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
-                    _kvRow(
-                      'Referral earnings USD',
-                      '${data.earningsSummary['referralEarningsUsd'] ?? 0}',
-                    ),
-                    _kvRow(
-                      'Available balance USD',
-                      '${data.balance?.data['availableBalanceUsd'] ?? 0}',
-                    ),
-                    _kvRow('Referral count', '${data.referralCount}'),
-                  ],
-                ),
+                  ),
+                ],
               );
             },
           ),

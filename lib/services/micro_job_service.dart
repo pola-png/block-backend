@@ -9,20 +9,35 @@ class MicroJobService {
   static const String _completedTasksKey = 'xapzap_completed_micro_jobs_v1';
   static final ValueNotifier<double> userBalanceNotifier = ValueNotifier<double>(0.0);
 
-  // Checks if a task is already completed by the user
+  // Checks if a task is already completed by the user (resets after 60 seconds)
   static Future<bool> isTaskCompleted(String taskId) async {
     final prefs = await SharedPreferences.getInstance();
-    final completed = prefs.getStringList(_completedTasksKey) ?? <String>[];
-    return completed.contains(taskId);
+    final completedTime = prefs.getInt('${_completedTasksKey}_time_$taskId') ?? 0;
+    if (completedTime == 0) return false;
+    final elapsedMs = DateTime.now().millisecondsSinceEpoch - completedTime;
+    if (elapsedMs >= 60 * 1000) {
+      return false; // Completed more than 60s ago, so it is available again
+    }
+    return true;
   }
 
   // Marks a task as completed locally and returns true if it was newly completed
   static Future<bool> _markTaskCompletedLocally(String taskId) async {
     final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    final completedTime = prefs.getInt('${_completedTasksKey}_time_$taskId') ?? 0;
+    if (completedTime != 0 && (now - completedTime < 60 * 1000)) {
+      return false;
+    }
+
+    await prefs.setInt('${_completedTasksKey}_time_$taskId', now);
+
     final completed = prefs.getStringList(_completedTasksKey) ?? <String>[];
-    if (completed.contains(taskId)) return false;
-    completed.add(taskId);
-    await prefs.setStringList(_completedTasksKey, completed);
+    if (!completed.contains(taskId)) {
+      completed.add(taskId);
+      await prefs.setStringList(_completedTasksKey, completed);
+    }
     return true;
   }
 
@@ -60,7 +75,7 @@ class MicroJobService {
     if (lastTime == 0) return 0;
     
     final elapsedMs = DateTime.now().millisecondsSinceEpoch - lastTime;
-    final remainingSeconds = 60 - (elapsedMs ~/ 1000);
+    final remainingSeconds = 10 - (elapsedMs ~/ 1000);
     return remainingSeconds > 0 ? remainingSeconds : 0;
   }
 
@@ -121,25 +136,20 @@ class MicroJobService {
     }
   }
 
-  // Fetches videos posted by the admin as video watch tasks.
-  // Filters posts to only include those by admin accounts (e.g. usernames containing admin/staff or post creators with specific IDs)
   static Future<List<Post>> fetchAdminVideos() async {
+    final List<Post> combinedVideos = [];
+
+    // 1. Fetch boosted posts
     try {
-      // Get all posts
       final res = await BackendService.getDocuments(
         BackendService.postsCollectionId,
       );
-
-      final List<Post> adminVideos = [];
       for (final row in res.rows) {
         try {
           final data = row.data as Map<String, dynamic>;
-          
-          // Only show boosted videos
           final isBoosted = data['isBoosted'] == true || data['is_boosted'] == true;
           if (!isBoosted) continue;
 
-          // Extract videoUrl: check videoUrl column first, fallback to first item of mediaUrls
           String? videoUrl = data['videoUrl'] as String?;
           if (videoUrl == null || videoUrl.isEmpty) {
             final media = data['mediaUrls'] as List?;
@@ -154,10 +164,12 @@ class MicroJobService {
           final isVideo = videoUrl != null &&
               (videoUrl.toLowerCase().contains('.mp4') ||
                videoUrl.toLowerCase().contains('.mov') ||
-               videoUrl.toLowerCase().contains('.m3u8'));
+               videoUrl.toLowerCase().contains('.m3u8') ||
+               videoUrl.toLowerCase().contains('youtube.com') ||
+               videoUrl.toLowerCase().contains('youtu.be'));
 
           if (isVideo) {
-            adminVideos.add(
+            combinedVideos.add(
               Post(
                 id: row.$id,
                 username: data['username'] as String? ?? 'xapzap_admin',
@@ -175,121 +187,36 @@ class MicroJobService {
           }
         } catch (_) {}
       }
+    } catch (_) {}
 
-      // Always guarantee at least 8 jobs by padding with fallback/mock videos
-      final fallbacks = _getFallbackAdminJobs();
-      int fallbackIndex = 0;
-      while (adminVideos.length < 8 && fallbackIndex < fallbacks.length) {
-        final fb = fallbacks[fallbackIndex++];
-        if (!adminVideos.any((v) => v.id == fb.id)) {
-          adminVideos.add(fb);
+    // 2. Fetch advertiser campaigns from Supabase and parse them into Post models
+    try {
+      final campaigns = await fetchActiveCampaigns();
+      for (final campaign in campaigns) {
+        final videoUrl = campaign['video_url'] as String? ?? '';
+        if (videoUrl.isNotEmpty) {
+          combinedVideos.add(
+            Post(
+              id: campaign['id'] as String,
+              username: 'sponsored_promo',
+              userAvatar: '',
+              content: campaign['title'] as String? ?? 'Sponsored Premium Review Campaign',
+              videoUrl: videoUrl,
+              timestamp: DateTime.now(),
+              likes: 120,
+              comments: 5,
+              reposts: 2,
+              views: 1000,
+              isBoosted: true,
+            ),
+          );
         }
       }
-      return adminVideos;
-    } catch (_) {
-      return _getFallbackAdminJobs();
-    }
-  }
+    } catch (_) {}
 
-  static List<Post> _getFallbackAdminJobs() {
-    return [
-      Post(
-        id: 'admin_job_video_1',
-        username: 'xapzap_staff',
-        userAvatar: '',
-        content: 'Watch this onboarding presentation to understand the new features of XapZap!',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-stars-in-space-background-1611-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 1)),
-        likes: 999,
-        comments: 42,
-        reposts: 15,
-        views: 10423,
-      ),
-      Post(
-        id: 'admin_job_video_2',
-        username: 'xapzap_rewards',
-        userAvatar: '',
-        content: 'Find out how to maximize your daily earnings with Micro Jobs on our platform.',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-forest-stream-in-the-sunlight-529-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 2)),
-        likes: 1250,
-        comments: 88,
-        reposts: 22,
-        views: 12435,
-      ),
-      Post(
-        id: 'admin_job_video_3',
-        username: 'xapzap_promo',
-        userAvatar: '',
-        content: 'Check out the top community moments from last month!',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-texture-of-a-waving-blue-flag-in-wind-48866-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 3)),
-        likes: 888,
-        comments: 31,
-        reposts: 11,
-        views: 8904,
-      ),
-      Post(
-        id: 'admin_job_video_4',
-        username: 'xapzap_admin',
-        userAvatar: '',
-        content: 'Learn how to secure your XapZap account with 2FA.',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-wavy-surface-of-dark-blue-liquid-48864-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 4)),
-        likes: 654,
-        comments: 29,
-        reposts: 8,
-        views: 7430,
-      ),
-      Post(
-        id: 'admin_job_video_5',
-        username: 'xapzap_support',
-        userAvatar: '',
-        content: 'How to request payouts and transfer your earnings.',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-bright-neon-tunnel-in-a-futuristic-city-43183-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 5)),
-        likes: 720,
-        comments: 54,
-        reposts: 14,
-        views: 9540,
-      ),
-      Post(
-        id: 'admin_job_video_6',
-        username: 'xapzap_events',
-        userAvatar: '',
-        content: 'Upcoming creator events and community guidelines updates.',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-rotating-planet-earth-in-space-1206-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 6)),
-        likes: 1120,
-        comments: 72,
-        reposts: 19,
-        views: 11240,
-      ),
-      Post(
-        id: 'admin_job_video_7',
-        username: 'xapzap_marketing',
-        userAvatar: '',
-        content: 'Maximize your reach and get more followers on XapZap.',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-abstract-graphic-tunnel-of-golden-squares-43187-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 7)),
-        likes: 830,
-        comments: 38,
-        reposts: 12,
-        views: 8900,
-      ),
-      Post(
-        id: 'admin_job_video_8',
-        username: 'xapzap_moderator',
-        userAvatar: '',
-        content: 'Understanding copyright policies and safe uploading.',
-        videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-spinning-disc-of-blue-neon-light-43181-large.mp4',
-        timestamp: DateTime.now().subtract(const Duration(days: 8)),
-        likes: 410,
-        comments: 18,
-        reposts: 5,
-        views: 5210,
-      ),
-    ];
+    // Shuffle the combined list to rotate videos dynamically
+    combinedVideos.shuffle();
+    return combinedVideos;
   }
 
   // Gets the current user level (defaults to 1 if not set)
@@ -343,5 +270,38 @@ class MicroJobService {
     } catch (_) {
       return false;
     }
+  }
+
+  static double _totalPayoutBase = 132450.80;
+
+  static Future<double> getTotalPayoutBase() async {
+    final prefs = await SharedPreferences.getInstance();
+    _totalPayoutBase = prefs.getDouble('xapzap_total_payout_base') ?? 132450.80;
+    try {
+      final res = await Supabase.instance.client
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'total_payout_usd')
+          .maybeSingle();
+      if (res != null && res['value'] != null) {
+        final val = double.tryParse(res['value'].toString());
+        if (val != null) {
+          _totalPayoutBase = val;
+          await prefs.setDouble('xapzap_total_payout_base', val);
+        }
+      }
+    } catch (_) {}
+    return _totalPayoutBase;
+  }
+
+  static Future<void> saveTotalPayoutBase(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    _totalPayoutBase = value;
+    await prefs.setDouble('xapzap_total_payout_base', value);
+    try {
+      await Supabase.instance.client
+          .from('app_settings')
+          .upsert({'key': 'total_payout_usd', 'value': value.toString()});
+    } catch (_) {}
   }
 }

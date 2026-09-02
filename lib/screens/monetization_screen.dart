@@ -1,8 +1,11 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/backend_service.dart';
 import '../services/ad_revenue_service.dart';
+import '../services/micro_job_service.dart';
 import 'withdrawal_settings_screen.dart';
+import 'payout_verification_screen.dart';
 
 class MonetizationScreen extends StatefulWidget {
   const MonetizationScreen({super.key});
@@ -28,6 +31,11 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   final double _creatorShare = 0.45; // 45% to uploader
   int? _hoveredBarIndex;
 
+  // Verification state (Level 1 users must verify before receiving payouts)
+  int _userLevel = 1;
+  bool _isVerified = false;
+  String _verificationStatus = 'unverified';
+
   @override
   void initState() {
     super.initState();
@@ -49,6 +57,25 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
         setState(() {
           _isGuest = false;
         });
+      }
+
+      // Load user level and verification status
+      final supabaseUser = Supabase.instance.client.auth.currentUser;
+      if (supabaseUser != null) {
+        final level = await MicroJobService.getUserLevel(supabaseUser.id);
+        final profileRes = await Supabase.instance.client
+            .from('profiles')
+            .select('is_verified, verification_status')
+            .eq('id', supabaseUser.id)
+            .maybeSingle();
+        if (mounted) {
+          setState(() {
+            _userLevel = level;
+            _isVerified = profileRes?['is_verified'] == true;
+            _verificationStatus =
+                profileRes?['verification_status'] as String? ?? 'unverified';
+          });
+        }
       }
       final totals = await AdRevenueService.getTotalsByFormat();
       final counts = await AdRevenueService.getCountsByFormat();
@@ -531,15 +558,123 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
             ],
           ),
           const SizedBox(height: 16),
+          // ── Verification Gate: Level 1 users who have hit the minimum ──
+          if (ready && _userLevel == 1 && !_isVerified)
+            _buildVerificationGateCard(theme)
+          else
+            Text(
+              ready
+                  ? 'Your balance is above the minimum payout threshold. It will be included in the monthly payout run.'
+                  : 'Your balance stays on your account and rolls forward until it reaches the minimum payout threshold.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVerificationGateCard(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
+
+    Color statusColor;
+    String statusLabel;
+    String bodyText;
+
+    if (_verificationStatus == 'id_pending') {
+      statusColor = Colors.amber.shade700;
+      statusLabel = 'ID Under Review';
+      bodyText =
+          'Your Government ID has been submitted and is under review. Payouts will be released once verification is approved (24–48 hrs).';
+    } else if (_verificationStatus == 'fee_paid') {
+      statusColor = Colors.blue;
+      statusLabel = 'Fee Paid — Upload ID';
+      bodyText =
+          'You have paid the verification fee. Please upload your Government ID to complete identity verification and unlock payouts.';
+    } else {
+      statusColor = Colors.redAccent;
+      statusLabel = 'Verification Required';
+      bodyText =
+          'Your balance has reached the payout threshold! To receive your earnings, you must complete a one-time identity verification — this includes a \$2.00 KYC fee and a Government ID upload.';
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(isDark ? 0.12 : 0.07),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: statusColor.withOpacity(0.4), width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                _verificationStatus == 'id_pending'
+                    ? Icons.hourglass_top_rounded
+                    : _verificationStatus == 'fee_paid'
+                        ? Icons.credit_score_rounded
+                        : Icons.verified_user_outlined,
+                color: statusColor,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                statusLabel,
+                style: TextStyle(
+                  color: statusColor,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Text(
-            ready
-                ? 'Your balance is above the minimum payout threshold. It will be included in the monthly payout run.'
-                : 'Your balance stays on your account and rolls forward until it reaches the minimum payout threshold.',
+            bodyText,
             style: theme.textTheme.bodySmall?.copyWith(
-              fontWeight: FontWeight.w600,
               color: theme.colorScheme.onSurface,
+              height: 1.5,
+              fontWeight: FontWeight.w500,
             ),
           ),
+          if (_verificationStatus != 'id_pending') ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: statusColor,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  elevation: 0,
+                ),
+                icon: const Icon(Icons.shield_rounded, size: 18),
+                label: Text(
+                  _verificationStatus == 'fee_paid'
+                      ? 'Upload Government ID'
+                      : 'Complete Identity Verification',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          const PayoutVerificationScreen(),
+                    ),
+                  ).then((_) => _loadData());
+                },
+              ),
+            ),
+          ],
         ],
       ),
     );

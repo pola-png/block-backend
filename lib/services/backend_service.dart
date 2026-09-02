@@ -975,6 +975,69 @@ class BackendService {
     }
   }
 
+  static Future<void> adjustUserBalance(String userId, double amountAdjust) async {
+    try {
+      final balanceRow = await getLatestCreatorBalance(userId);
+      if (balanceRow != null) {
+        final data = balanceRow.data as Map<String, dynamic>;
+        final currentBalVal = data['balanceUsd'] ?? 0.0;
+        final currentAvailVal = data['availableBalanceUsd'] ?? 0.0;
+
+        final double currentBal = currentBalVal is num ? currentBalVal.toDouble() : (double.tryParse(currentBalVal.toString()) ?? 0.0);
+        final double currentAvail = currentAvailVal is num ? currentAvailVal.toDouble() : (double.tryParse(currentAvailVal.toString()) ?? 0.0);
+
+        await updateRow(
+          creatorBalancesCollectionId,
+          balanceRow.$id,
+          {
+            'balanceUsd': (currentBal + amountAdjust).clamp(0.0, 999999.0),
+            'availableBalanceUsd': (currentAvail + amountAdjust).clamp(0.0, 999999.0),
+          },
+        );
+      } else {
+        await createDocument(
+          creatorBalancesCollectionId,
+          {
+            'creatorId': userId,
+            'balanceUsd': amountAdjust.clamp(0.0, 999999.0),
+            'availableBalanceUsd': amountAdjust.clamp(0.0, 999999.0),
+          },
+        );
+      }
+    } catch (e) {
+      debugPrint('Error adjusting user balance: $e');
+      rethrow;
+    }
+  }
+
+  static Future<void> markUserCheater(String userId, {required bool isCheater, double? deduction, String? reason}) async {
+    try {
+      await Supabase.instance.client.from('profiles').update({
+        'is_cheater': isCheater,
+        'cheater_alert_shown': false,
+        if (isCheater) 'cheater_penalty_reason': reason ?? 'Suspicious task activity',
+        if (isCheater) 'cheater_penalty_amount': deduction ?? 0.0,
+      }).eq('id', userId);
+
+      if (isCheater && deduction != null && deduction > 0) {
+        await adjustUserBalance(userId, -deduction);
+      }
+    } catch (e) {
+      debugPrint('Error setting cheater flag: $e');
+      rethrow;
+    }
+  }
+
+  static Future<void> clearCheaterAlert(String userId) async {
+    try {
+      await Supabase.instance.client.from('profiles').update({
+        'cheater_alert_shown': true,
+      }).eq('id', userId);
+    } catch (e) {
+      debugPrint('Error clearing cheater alert flag: $e');
+    }
+  }
+
   // Generic docs (TablesDB)
   static Future<models.Row> createDocument(
     String tableId,

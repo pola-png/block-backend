@@ -1,6 +1,7 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:image_picker/image_picker.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -18,6 +19,7 @@ import 'dart:async';
 import '../services/push_notification_service.dart';
 import '../models/chat.dart';
 import '../services/chat_message_cache.dart';
+import '../services/ad_gate_service.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -41,6 +43,10 @@ class _MainScreenState extends State<MainScreen> {
   bool _checkedWelcomeIntro = false;
   final ImagePicker _picker = ImagePicker();
 
+  // Ad gate: periodic timer + nav-switch counter
+  Timer? _interstitialTimer;
+  int _navSwitchCount = 0;
+
   final List<Widget> _screens = [
     const HomeScreen(),
     const ChatScreen(),
@@ -58,7 +64,15 @@ class _MainScreenState extends State<MainScreen> {
     _subscribeBanWatcher();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybeShowWelcomeIntro();
+      _maybeShowCheaterAlert();
       _initializeNotifications();
+    });
+
+    // 1-minute periodic interstitial ad timer
+    _interstitialTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(XapZapAdGateService.instance.showInterstitialAd(
+        placement: 'periodic_timer',
+      ));
     });
   }
 
@@ -87,6 +101,98 @@ class _MainScreenState extends State<MainScreen> {
       await prefs.setBool(_welcomeIntroSeenKey, true);
     } catch (_) {
       // Ignore intro persistence errors and let the app continue normally.
+    }
+  }
+
+  Future<void> _maybeShowCheaterAlert() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return;
+
+      final res = await Supabase.instance.client
+          .from('profiles')
+          .select('is_cheater, cheater_alert_shown, cheater_penalty_amount, cheater_penalty_reason')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (res != null &&
+          res['is_cheater'] == true &&
+          res['cheater_alert_shown'] != true &&
+          mounted) {
+        final reason = res['cheater_penalty_reason'] as String? ?? 'Suspicious/fake task completions.';
+        final double deduction = (res['cheater_penalty_amount'] as num?)?.toDouble() ?? 0.0;
+
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogCtx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.red, size: 28),
+                SizedBox(width: 8),
+                Text('Warning: System Alert', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Suspicious Activity Detected',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.redAccent),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Our anti-fraud system has flaggged fake task completions on your account. As a result, a penalty deduction has been applied to your balance.',
+                  style: TextStyle(height: 1.4),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.red.withOpacity(0.2)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Deduction Penalty: -\$${deduction.toStringAsFixed(2)}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Reason: $reason',
+                        style: const TextStyle(fontSize: 12, height: 1.3),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Please perform tasks honestly. Future violations will result in permanent account suspension.',
+                  style: TextStyle(fontSize: 11, color: Colors.grey, height: 1.3),
+                ),
+              ],
+            ),
+            actions: [
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () async {
+                  Navigator.of(dialogCtx).pop();
+                  await BackendService.clearCheaterAlert(user.id);
+                },
+                child: const Text('I Understand', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cheating alert status: $e');
     }
   }
 
@@ -387,6 +493,13 @@ class _MainScreenState extends State<MainScreen> {
       onTap: () async {
         if (!_isAuthed && index != 0) {
           return;
+        }
+        // Trigger navigation interstitial ad on every tab switch
+        _navSwitchCount++;
+        if (_navSwitchCount % 2 == 0) {
+          unawaited(XapZapAdGateService.instance.showInterstitialAd(
+            placement: 'bottom_nav_switch',
+          ));
         }
         setState(() {
           _currentIndex = index;
@@ -749,6 +862,7 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   void dispose() {
+    _interstitialTimer?.cancel();
     _badgeSub?.close();
     _banSub?.close();
     super.dispose();

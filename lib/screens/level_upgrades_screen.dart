@@ -24,6 +24,8 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
   final InAppPurchase _inAppPurchase = InAppPurchase.instance;
   late StreamSubscription<List<PurchaseDetails>> _subscription;
   List<ProductDetails> _products = [];
+  bool _billingAvailable = true;   // false if Play Billing unavailable
+  bool _productsLoaded = false;     // true once queryProductDetails completes
 
   @override
   void initState() {
@@ -196,19 +198,27 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
     try {
       final bool available = await _inAppPurchase.isAvailable();
       if (!available) {
-        debugPrint("In-App Purchase is not available on this platform.");
+        debugPrint("[IAP] Play Billing not available on this device.");
+        if (mounted) setState(() { _billingAvailable = false; _productsLoaded = true; });
         return;
       }
       const Set<String> kIds = <String>{'xapzap_level_2', 'xapzap_level_3', 'xapzap_level_4'};
       final ProductDetailsResponse response = await _inAppPurchase.queryProductDetails(kIds);
       if (response.notFoundIDs.isNotEmpty) {
-        debugPrint("Products not found in store: ${response.notFoundIDs}");
+        debugPrint("[IAP] Products not found in Play Console: ${response.notFoundIDs}");
       }
-      setState(() {
-        _products = response.productDetails;
-      });
+      debugPrint("[IAP] Loaded ${response.productDetails.length} products: "
+          "${response.productDetails.map((p) => p.id).toList()}");
+      if (mounted) {
+        setState(() {
+          _products = response.productDetails;
+          _billingAvailable = true;
+          _productsLoaded = true;
+        });
+      }
     } catch (e) {
-      debugPrint("Error fetching IAP products: $e");
+      debugPrint("[IAP] Error fetching products: $e");
+      if (mounted) setState(() { _productsLoaded = true; });
     }
   }
 
@@ -277,8 +287,32 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
   Future<void> _processUpgrade(int targetLevel, double cost) async {
     if (_isProcessing) return;
 
+    // Guard: billing service unavailable (e.g. no Google Play on device)
+    if (!_billingAvailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Google Play Billing is not available on this device.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     final String prodId = 'xapzap_level_$targetLevel';
-    
+
+    // Guard: products haven't loaded yet — retry
+    if (!_productsLoaded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Store products are still loading. Please try again in a moment.'),
+          backgroundColor: Colors.amber,
+        ),
+      );
+      _loadProducts(); // retry
+      return;
+    }
+
+    // Find the matching product from Play Store
     ProductDetails? product;
     for (final p in _products) {
       if (p.id == prodId) {
@@ -287,49 +321,55 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
       }
     }
 
+    // Guard: product not found in Play Console
     if (product == null) {
-      debugPrint("IAP product $prodId not found. Simulating transaction for sandbox developer test...");
-      setState(() {
-        _isProcessing = true;
-      });
-      final success = await _updateLevelInDatabase(
-        targetLevel,
-        cost,
-        'simulated_iap_${DateTime.now().millisecondsSinceEpoch}',
-      );
-      setState(() {
-        _isProcessing = false;
-      });
-      if (success) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('SIMULATED: Account level upgraded to Level $targetLevel successfully!${_isEligibleForBonus ? " 50% Signup Bonus credited!" : ""}'),
-              backgroundColor: Colors.green,
+      debugPrint('[IAP] Product $prodId not found in loaded products: '
+          '${_products.map((p) => p.id).toList()}');
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Product Not Found'),
+            content: const Text(
+              'This upgrade product could not be loaded from the Play Store.\n\n'
+              'Make sure:\n'
+              '• You installed this app from the Play Store (not sideloaded)\n'
+              '• Your device has Google Play Services\n'
+              '• The products are Active in Play Console',
             ),
-          );
-          Navigator.pop(context, true);
-        }
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _loadProducts(); // retry
+                },
+                child: const Text('Retry'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
       }
       return;
     }
 
-    setState(() {
-      _isProcessing = true;
-    });
+    // All good — launch Play Store billing sheet
+    setState(() { _isProcessing = true; });
 
     try {
       final PurchaseParam purchaseParam = PurchaseParam(productDetails: product);
       await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
+      // _isProcessing will be set to false inside _listenToPurchaseUpdated
     } catch (e) {
-      debugPrint('Google Play purchase trigger failed: $e');
-      setState(() {
-        _isProcessing = false;
-      });
+      debugPrint('[IAP] Purchase trigger failed: $e');
       if (mounted) {
+        setState(() { _isProcessing = false; });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Purchase failed to initialize: $e'),
+            content: Text('Could not open payment sheet: $e'),
             backgroundColor: Colors.red,
           ),
         );

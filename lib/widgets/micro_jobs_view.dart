@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as sb;
 import '../models/post.dart';
 import '../services/micro_job_service.dart';
 import '../services/app_review_service.dart';
 import '../services/backend_service.dart';
 import '../services/ad_helper.dart';
+import '../services/ad_gate_service.dart';
 import '../screens/job_video_player_screen.dart';
 import 'home_feed_ad_widgets.dart';
 
@@ -16,6 +19,8 @@ import '../screens/level_upgrades_screen.dart';
 import '../screens/submit_video_campaign_screen.dart';
 import '../screens/video_review_screen.dart';
 import '../screens/monetization_screen.dart';
+import '../screens/visit_website_gateway_screen.dart';
+import '../screens/perform_tasks_screen.dart';
 
 class MicroJobsView extends StatefulWidget {
   const MicroJobsView({super.key});
@@ -31,6 +36,13 @@ class _MicroJobsViewState extends State<MicroJobsView> {
   bool _isLoadingJobs = true;
   final Map<String, bool> _completedVideoMap = {};
   final Map<String, bool> _completedCampaignMap = {};
+
+  List<String> _websiteTasksUrls = [];
+  final Map<String, bool> _completedWebsiteTasksMap = {};
+  final Map<String, bool> _websiteTasksVisibilityMap = {};
+  final Map<String, bool> _websiteTasksDirectMap = {};
+
+  static const List<String> _defaultWebsiteUrls = [];
   
   int _userLevel = 1;
   bool _isAdmin = false;
@@ -47,17 +59,66 @@ class _MicroJobsViewState extends State<MicroJobsView> {
   bool _isBottomBannerLoaded = false;
   int _cooldownSeconds = 0;
   Timer? _cooldownTimer;
+  final _urlInputController = TextEditingController();
+
+  double _livePayouts = 132450.80;
+  int _onlineMembers = 14204;
+  List<_LiveActivity> _liveActivities = [];
+  Timer? _tickerTimer;
+  final _random = Random();
 
   @override
   void initState() {
     super.initState();
+    _liveActivities = [
+      _LiveActivity('User @joh*** completed task and earned \$0.030', 'just now'),
+      _LiveActivity('User @mic*** completed Watch Video job', '1m ago'),
+      _LiveActivity('User @ann*** withdrew \$10.00 successfully', '2m ago'),
+    ];
     BackendService.adminModeOverride.addListener(_onAdminOverrideChanged);
     _loadStateAndJobs();
     _loadBannerAds();
     _showAppOpenAd();
     _startCooldownCountdown();
+    
+    MicroJobService.getTotalPayoutBase().then((val) {
+      if (mounted) {
+        setState(() {
+          _livePayouts = val;
+        });
+      }
+    });
+
     _interstitialTimer = Timer.periodic(const Duration(minutes: 2), (timer) {
       _showInterstitialAd();
+    });
+
+    _tickerTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (!mounted) return;
+      final added = 0.05 + _random.nextDouble() * 0.70;
+      final memberChange = _random.nextInt(7) - 3;
+      final letters = 'abcdefghijklmnopqrstuvwxyz';
+      final u1 = letters[_random.nextInt(26)];
+      final u2 = letters[_random.nextInt(26)];
+      final u3 = letters[_random.nextInt(26)];
+      final username = '@$u1$u2$u3***';
+      final events = [
+        'completed task and earned \$0.030',
+        'completed Watch Video job',
+        'completed video watch and earned \$0.150',
+        'withdrew \$5.00 successfully',
+        'withdrew \$15.00 successfully',
+        'upgraded to Bronze Level',
+      ];
+      final event = events[_random.nextInt(events.length)];
+      setState(() {
+        _livePayouts += added;
+        _onlineMembers = (_onlineMembers + memberChange).clamp(13900, 14600);
+        _liveActivities.insert(0, _LiveActivity('User $username $event', 'just now'));
+        if (_liveActivities.length > 4) {
+          _liveActivities.removeLast();
+        }
+      });
     });
   }
 
@@ -221,7 +282,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     _topBannerAd = BannerAd(
       adUnitId: AdHelper.banner,
       size: AdSize.banner,
-      request: const AdRequest(),
+      request: AdHelper.financialRequest,
       listener: BannerAdListener(
         onAdLoaded: (_) => setState(() => _isTopBannerLoaded = true),
         onAdFailedToLoad: (ad, error) {
@@ -234,7 +295,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     _bottomBannerAd = BannerAd(
       adUnitId: AdHelper.banner,
       size: AdSize.banner,
-      request: const AdRequest(),
+      request: AdHelper.financialRequest,
       listener: BannerAdListener(
         onAdLoaded: (_) => setState(() => _isBottomBannerLoaded = true),
         onAdFailedToLoad: (ad, error) {
@@ -245,19 +306,37 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     )..load();
   }
 
+  int _appOpenAdRetryCount = 0;
+
   void _showAppOpenAd() {
+    debugPrint('[Jobs] Requesting App Open Ad...');
     AppOpenAd.load(
       adUnitId: AdHelper.appOpen,
       request: const AdRequest(),
       adLoadCallback: AppOpenAdLoadCallback(
         onAdLoaded: (ad) {
+          _appOpenAdRetryCount = 0; // reset retry counter on success
           ad.fullScreenContentCallback = FullScreenContentCallback(
             onAdDismissedFullScreenContent: (ad) => ad.dispose(),
-            onAdFailedToShowFullScreenContent: (ad, error) => ad.dispose(),
+            onAdFailedToShowFullScreenContent: (ad, error) {
+              ad.dispose();
+              debugPrint('[Jobs] App Open Ad failed to show: $error. Falling back to Interstitial.');
+              XapZapAdGateService.instance.showInterstitialAd(placement: 'jobs_screen_open_fallback');
+            },
           );
           ad.show();
         },
-        onAdFailedToLoad: (error) => debugPrint('Failed to load App Open Ad: $error'),
+        onAdFailedToLoad: (error) {
+          debugPrint('[Jobs] App Open Ad failed to load: $error');
+          if (_appOpenAdRetryCount < 2) {
+            _appOpenAdRetryCount++;
+            debugPrint('[Jobs] Retrying App Open Ad load (attempt $_appOpenAdRetryCount)...');
+            Future.delayed(const Duration(seconds: 2), _showAppOpenAd);
+          } else {
+            debugPrint('[Jobs] App Open Ad load retries exhausted. Falling back to Interstitial.');
+            XapZapAdGateService.instance.showInterstitialAd(placement: 'jobs_screen_open_fallback');
+          }
+        },
       ),
     );
   }
@@ -334,11 +413,63 @@ class _MicroJobsViewState extends State<MicroJobsView> {
         final comp = await MicroJobService.isCampaignReviewed(campaign['id'], user.$id);
         _completedCampaignMap[campaign['id']] = comp;
       }
+
+      // LOAD WEBSITE TASKS
+      List<String> loadedUrls = [];
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final deletedDefaults = prefs.getStringList('deleted_default_urls') ?? [];
+        for (final url in _defaultWebsiteUrls) {
+          if (!deletedDefaults.contains(url)) {
+            loadedUrls.add(url);
+            _websiteTasksVisibilityMap[url] = prefs.getBool('visibility_$url') ?? true;
+          }
+        }
+      } catch (_) {
+        loadedUrls = List.from(_defaultWebsiteUrls);
+      }
+
+      try {
+        final query = sb.Supabase.instance.client.from('website_tasks').select('url, is_visible, is_direct');
+        final res = isAdmin ? await query : await query.eq('is_visible', true);
+        if (res.isNotEmpty) {
+          for (final row in res) {
+            final url = row['url'] as String;
+            final isVisible = row['is_visible'] == true;
+            final isDirect = row['is_direct'] == true;
+            if (!loadedUrls.contains(url)) {
+              loadedUrls.add(url);
+            }
+            _websiteTasksVisibilityMap[url] = isVisible;
+            _websiteTasksDirectMap[url] = isDirect;
+          }
+        }
+      } catch (e) {
+        debugPrint('Error loading website tasks from Supabase: $e');
+      }
+
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final localList = prefs.getStringList('local_website_tasks') ?? [];
+        for (final url in localList) {
+          if (!loadedUrls.contains(url)) {
+            loadedUrls.add(url);
+          }
+          _websiteTasksVisibilityMap[url] = prefs.getBool('visibility_$url') ?? true;
+          _websiteTasksDirectMap[url] = prefs.getBool('direct_$url') ?? false;
+        }
+      } catch (_) {}
+
+      for (final url in loadedUrls) {
+        final completed = await MicroJobService.isTaskCompleted('visit_website_${url.hashCode}');
+        _completedWebsiteTasksMap[url] = completed;
+      }
       
       if (mounted) {
         setState(() {
           _adminVideos = videos;
           _advertiserCampaigns = campaigns;
+          _websiteTasksUrls = loadedUrls;
         });
       }
     }
@@ -349,6 +480,8 @@ class _MicroJobsViewState extends State<MicroJobsView> {
       });
     }
   }
+
+
 
   Future<void> _completeAppReviewFlow() async {
     final confirmed = await showDialog<bool>(
@@ -460,9 +593,11 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     BackendService.adminModeOverride.removeListener(_onAdminOverrideChanged);
     _interstitialTimer?.cancel();
     _cooldownTimer?.cancel();
+    _tickerTimer?.cancel();
     _bonusCountdownTimer?.cancel();
     _topBannerAd?.dispose();
     _bottomBannerAd?.dispose();
+    _urlInputController.dispose();
     super.dispose();
   }
 
@@ -471,7 +606,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     final isDark = theme.brightness == Brightness.dark;
-    final backgroundColor = isDark ? const Color(0xFF121212) : const Color(0xFFE9EBF0);
+    final backgroundColor = isDark ? const Color(0xFF121212) : const Color(0xFFE2E8F0);
     final hasEarning = MicroJobService.userBalanceNotifier.value > 0;
     final isUnlocked = _appReviewCompleted || hasEarning;
 
@@ -495,23 +630,17 @@ class _MicroJobsViewState extends State<MicroJobsView> {
                 physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
         children: [
-          // Available Earnings Card
           Card(
             elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            color: isDark ? null : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
+            ),
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
-                  Text(
-                    'Available Earnings',
-                    style: TextStyle(
-                      color: theme.colorScheme.onSurface,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
                   InkWell(
                     onTap: () {
                       Navigator.push(
@@ -521,20 +650,39 @@ class _MicroJobsViewState extends State<MicroJobsView> {
                     },
                     borderRadius: BorderRadius.circular(8),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                      child: ValueListenableBuilder<double>(
-                        valueListenable: MicroJobService.userBalanceNotifier,
-                        builder: (context, balance, _) {
-                          return Text(
-                            '\$${balance.toStringAsFixed(3)}',
-                            style: TextStyle(
-                              color: theme.colorScheme.onSurface,
-                              fontSize: 32,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -0.5,
-                            ),
-                          );
-                        },
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.account_balance_wallet, color: theme.colorScheme.primary, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Available Earnings',
+                                style: TextStyle(
+                                  color: theme.colorScheme.onSurface,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          ValueListenableBuilder<double>(
+                            valueListenable: MicroJobService.userBalanceNotifier,
+                            builder: (context, balance, _) {
+                              return Text(
+                                '\$${balance.toStringAsFixed(3)}',
+                                style: const TextStyle(
+                                  color: Color(0xFF1B5E20), // Deep premium forest green
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.5,
+                                ),
+                              );
+                            },
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -558,28 +706,40 @@ class _MicroJobsViewState extends State<MicroJobsView> {
                         icon: Icons.double_arrow_rounded,
                         label: 'Upgrade Level',
                         color: Colors.amber,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const LevelUpgradesScreen()),
-                        ).then((_) => _loadStateAndJobs()),
+                        onTap: () async {
+                          await XapZapAdGateService.instance.showInterstitialAd(placement: 'jobs_upgrade_level');
+                          if (!mounted) return;
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const LevelUpgradesScreen()),
+                          ).then((_) => _loadStateAndJobs());
+                        },
                       ),
                       _buildQuickAction(
                         icon: Icons.wallet,
                         label: 'Withdraw Settings',
                         color: theme.colorScheme.primary,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const WithdrawalSettingsScreen()),
-                        ),
+                        onTap: () async {
+                          await XapZapAdGateService.instance.showInterstitialAd(placement: 'jobs_withdraw_settings');
+                          if (!mounted) return;
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const WithdrawalSettingsScreen()),
+                          );
+                        },
                       ),
                       _buildQuickAction(
                         icon: Icons.campaign_rounded,
                         label: 'Submit Jobs',
                         color: theme.colorScheme.primary,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const SubmitVideoCampaignScreen()),
-                        ),
+                        onTap: () async {
+                          await XapZapAdGateService.instance.showInterstitialAd(placement: 'jobs_submit_campaign');
+                          if (!mounted) return;
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const SubmitVideoCampaignScreen()),
+                          );
+                        },
                       ),
                     ],
                   ),
@@ -651,425 +811,229 @@ class _MicroJobsViewState extends State<MicroJobsView> {
                 );
               }
             ),
-            const SizedBox(height: 16),
-          ],
-
-
-
-          // 2. Starter App Review Task (only show if not completed and no earnings)
-          if (!isUnlocked) ...[
-            Text(
-              'Starter Task (Required)',
-              style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-            ),
             const SizedBox(height: 10),
-            Card(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(
-                  color: _appReviewCompleted ? Colors.green.shade800.withOpacity(0.5) : theme.colorScheme.secondary.withOpacity(0.5),
-                  width: 1.5,
-                ),
-              ),
+          ],
+          
+          // 2. Perform Tasks & Earn Action Card (Small height, 500+ tasks available)
+          Card(
+            elevation: 2,
+            color: isDark ? null : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
+            ),
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const PerformTasksScreen()),
+                ).then((_) => _loadStateAndJobs());
+              },
+              borderRadius: BorderRadius.circular(16),
               child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(
                   children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: (_appReviewCompleted ? Colors.green : theme.colorScheme.secondary).withOpacity(0.1),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            _appReviewCompleted ? Icons.check_circle : Icons.star_rate_rounded,
-                            color: _appReviewCompleted ? Colors.green.shade800 : theme.colorScheme.secondary,
-                            size: 28,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Review Our Application',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Submit a 5-star review on the store to unlock other micro-jobs.',
-                                style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontSize: 13),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            const Text(
-                              'Reward',
-                              style: TextStyle(fontSize: 11, color: Colors.grey),
-                            ),
-                            Text(
-                              '+\$0.20',
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                color: _appReviewCompleted ? Colors.grey : Colors.green.shade800,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    if (_appReviewCompleted)
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.grey.shade800,
-                          foregroundColor: Colors.white70,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: null,
-                        icon: const Icon(Icons.check, size: 18),
-                        label: const Text('Already Reviewed & Claimed'),
-                      )
-                    else
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: theme.colorScheme.primary,
-                          foregroundColor: theme.colorScheme.onPrimary,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: _completeAppReviewFlow,
-                        child: const Text('Start Task Now', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withOpacity(0.1),
+                        shape: BoxShape.circle,
                       ),
+                      child: Icon(Icons.rocket_launch, color: theme.colorScheme.primary, size: 24),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Perform Tasks & Earn',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '500+ tasks available',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.arrow_forward_ios, size: 14, color: theme.colorScheme.onSurfaceVariant),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 24),
-          ],
-
-          // 3. Advertiser Video Review Campaigns (Premium)
-          if (_advertiserCampaigns.isNotEmpty) ...[
-            Text(
-              'Premium Video Reviews',
-              style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            ...List.generate(_advertiserCampaigns.length, (index) {
-              final campaign = _advertiserCampaigns[index];
-              final isCompleted = _completedCampaignMap[campaign['id']] ?? false;
-              
-              // Verify level requirement: Level 2 = Short (up to 10m), Level 3 = Medium (up to 30m)
-              // We lock if current user level is less than campaign's base required level
-              final int duration = campaign['duration_minutes'] as int? ?? 1;
-              
-              int requiredLevel = 2;
-              if (duration > 10 && duration <= 30) requiredLevel = 3;
-              if (duration > 30) requiredLevel = 4;
-
-              final isLocked = !_isAdmin && (_userLevel < requiredLevel);
-              final reward = _getRewardForCampaign(campaign);
-
-              return Card(
-                margin: const EdgeInsets.only(bottom: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                child: ListTile(
-                  enabled: isUnlocked,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  leading: Container(
-                    width: 50,
-                    height: 50,
-                    decoration: BoxDecoration(
-                      color: isLocked ? Colors.grey.shade900 : Colors.pinkAccent.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(
-                      isLocked ? Icons.lock : Icons.rate_review,
-                      color: isLocked ? Colors.grey : Colors.pinkAccent,
-                      size: 28,
-                    ),
-                  ),
-                  title: Text(
-                    'Review Ad: ${campaign['campaign_type']}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(
-                    'Duration: $duration mins ${isLocked ? "(Level $requiredLevel Required)" : ""}',
-                    style: TextStyle(fontSize: 12, color: isLocked ? Colors.orangeAccent : Colors.grey),
-                  ),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '+\$${reward.toStringAsFixed(2)}',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: isLocked ? Colors.grey : Colors.green,
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      if (isCompleted)
-                        const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.check_circle, color: Colors.green, size: 14),
-                            SizedBox(width: 4),
-                            Icon(Icons.arrow_forward_ios, size: 11),
-                          ],
-                        )
-                      else
-                        const Icon(Icons.arrow_forward_ios, size: 12),
-                    ],
-                  ),
-                  onTap: () {
-                    if (!isUnlocked) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: const Text('Please complete the starter App Review task first to unlock review jobs!'),
-                          backgroundColor: theme.colorScheme.error,
-                        ),
-                      );
-                      return;
-                    }
-
-                    if (isLocked) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('This $duration-minute video review requires a Level $requiredLevel upgrade to unlock!'),
-                          backgroundColor: theme.colorScheme.secondary,
-                          action: SnackBarAction(
-                            label: 'UPGRADE',
-                            textColor: Colors.white,
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => const LevelUpgradesScreen()),
-                              ).then((_) => _loadStateAndJobs());
-                            },
-                          ),
-                        ),
-                      );
-                      return;
-                    }
-
-                    final cooldown = _cooldownSeconds;
-                    if (cooldown > 0) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Please wait $cooldown seconds before starting another task.'),
-                          backgroundColor: Colors.amber,
-                          duration: const Duration(seconds: 2),
-                        ),
-                      );
-                      return;
-                    }
-
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => VideoReviewScreen(
-                          campaign: campaign,
-                          rewardAmount: reward,
-                          userLevel: _userLevel,
-                        ),
-                      ),
-                    ).then((_) => _loadStateAndJobs());
-                  },
-                ),
-              );
-            }),
-            const SizedBox(height: 16),
-          ],
-
-          // 4. Video Watch Jobs (Standard)
-          Text(
-            'Video Watch Jobs',
-            style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
-          if (_adminVideos.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(20.0),
-              child: Center(
-                child: Text('No watch jobs available right now. Please check back later.'),
-              ),
-            )
-          else
-            Builder(
-              builder: (context) {
-                final sortedVideos = List.of(_adminVideos);
-                sortedVideos.sort((a, b) {
-                  final aCompleted = _completedVideoMap[a.id] ?? false;
-                  final bCompleted = _completedVideoMap[b.id] ?? false;
-                  if (aCompleted && !bCompleted) return 1;
-                  if (!aCompleted && bCompleted) return -1;
-                  return 0;
-                });
 
-                return Column(
-                  children: List.generate(sortedVideos.length, (index) {
-                    final video = sortedVideos[index];
-                    final isCompleted = _completedVideoMap[video.id] ?? false;
-                    final reward = _getRewardForPost(video.id);
-
-                    // Find the index of the first uncompleted video in the sorted list
-                    final firstUncompletedIndex = sortedVideos.indexWhere(
-                      (v) => !(_completedVideoMap[v.id] ?? false)
-                    );
-                    
-                    // Lock sequentially if we are not admin, this job is not completed, and there is a previous uncompleted job
-                    final isLockedSequentially = !_isAdmin && 
-                        !isCompleted && 
-                        firstUncompletedIndex != -1 && 
-                        index > firstUncompletedIndex;
-
-                    final cardWidget = Opacity(
-                      opacity: (isUnlocked && !isLockedSequentially) ? 1.0 : 0.6,
-                      child: Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        child: ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          leading: Container(
-                            width: 50,
-                            height: 50,
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primaryContainer.withOpacity(0.3),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Icon(Icons.play_circle_fill, color: theme.colorScheme.primary, size: 32),
-                          ),
-                          title: Text(
-                            video.content.isNotEmpty ? video.content : 'Sponsored Watch Mission',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const SizedBox(height: 4),
-                              Row(
-                                children: [
-                                  const Icon(Icons.ads_click, size: 12, color: Colors.grey),
-                                  const SizedBox(width: 4),
-                                  Text('Ads included', style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontSize: 11)),
-                                ],
-                              ),
-                            ],
-                          ),
-                          trailing: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                '+\$${reward.toStringAsFixed(2)}',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.green,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              if (!isUnlocked)
-                                Icon(Icons.lock, color: theme.colorScheme.secondary, size: 16)
-                              else if (isLockedSequentially)
-                                Icon(Icons.lock_outline, color: theme.colorScheme.secondary.withOpacity(0.6), size: 16)
-                              else if (isCompleted)
-                                const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.check_circle, color: Colors.green, size: 14),
-                                    SizedBox(width: 4),
-                                    Icon(Icons.arrow_forward_ios, size: 11),
-                                  ],
-                                )
-                              else
-                                const Icon(Icons.arrow_forward_ios, size: 12),
-                            ],
-                          ),
-                          onTap: () async {
-                            if (!isUnlocked) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: const Text('Please complete the starter App Review task first to unlock video watch jobs!'),
-                                  backgroundColor: theme.colorScheme.error,
-                                ),
-                              );
-                              return;
-                            }
-
-                            if (isLockedSequentially) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: const Text('Please complete the previous watch jobs in sequence first!'),
-                                  backgroundColor: theme.colorScheme.error,
-                                ),
-                              );
-                              return;
-                            }
-
-                            final cooldown = await MicroJobService.getCooldownSecondsRemaining();
-                            if (cooldown > 0) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Please wait $cooldown seconds before starting another task.'),
-                                  duration: const Duration(seconds: 2),
-                                ),
-                              );
-                              return;
-                            }
-
-                      if (!mounted) return;
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => JobVideoPlayerScreen(
-                            post: video,
-                            rewardAmount: reward,
-                          ),
-                        ),
-                      ).then((_) {
-                        _loadStateAndJobs();
-                        _startCooldownCountdown();
-                      });
-                    },
-                  ),
-                ),
-              );
-
-              // Inject inline native ad after every 2 jobs
-              if ((index + 1) % 2 == 0) {
-                return Column(
-                  children: [
-                    cardWidget,
-                    HomeInlineNativeAdTile(
-                      slotIndex: (index ~/ 2) + 1,
-                      reserveSpaceWhenLoading: false,
-                      sharedPool: true,
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                );
-              }
-              return cardWidget;
-            }),
-                );
-              }
+          // 3. Live Statistics & Payouts Card
+          Card(
+            elevation: 2,
+            color: isDark ? null : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
             ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.analytics, color: Colors.blue, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Global Platform Stats',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: theme.colorScheme.onSurface),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Total Payouts',
+                            style: TextStyle(fontSize: 11, color: Colors.grey),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '\$${_formatPayout(_livePayouts)}',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text(
+                            'Active Members Online',
+                            style: TextStyle(fontSize: 11, color: Colors.grey),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: Colors.green,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                '$_onlineMembers',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.colorScheme.onSurface,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // 4. Live Activity Feed Card
+          Card(
+            elevation: 2,
+            color: isDark ? null : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.chat_bubble_outline_rounded, color: Colors.orange, size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Live Activity Feed',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: theme.colorScheme.onSurface),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade900.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.fiber_manual_record, color: Colors.red, size: 8),
+                            SizedBox(width: 4),
+                            Text(
+                              'LIVE',
+                              style: TextStyle(color: Colors.red, fontSize: 9, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Column(
+                    children: _liveActivities.map((act) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                act.message,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurface),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              act.timeAgo,
+                              style: const TextStyle(fontSize: 11, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 80),
         ],
       ),
@@ -1305,4 +1269,19 @@ class _MicroJobsViewState extends State<MicroJobsView> {
       ),
     );
   }
+
+  String _formatPayout(double value) {
+    if (value >= 1000000) {
+      return '${(value / 1000000).toStringAsFixed(1)}M';
+    } else if (value >= 1000) {
+      return '${(value / 1000).toStringAsFixed(1)}k';
+    }
+    return value.toStringAsFixed(2);
+  }
+}
+
+class _LiveActivity {
+  final String message;
+  final String timeAgo;
+  _LiveActivity(this.message, this.timeAgo);
 }

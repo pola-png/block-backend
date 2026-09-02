@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/micro_job_service.dart';
 
 class AdminCampaignDashboardScreen extends StatefulWidget {
   final bool showAppBar;
@@ -11,12 +13,39 @@ class AdminCampaignDashboardScreen extends StatefulWidget {
 
 class _AdminCampaignDashboardScreenState extends State<AdminCampaignDashboardScreen> {
   List<Map<String, dynamic>> _campaigns = [];
+  List<Map<String, dynamic>> _websiteTasks = [];
   bool _isLoading = true;
+  final TextEditingController _urlInputController = TextEditingController();
+  final TextEditingController _payoutInputController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _loadAllCampaigns();
+    _loadAllData();
+  }
+
+  @override
+  void dispose() {
+    _urlInputController.dispose();
+    _payoutInputController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadAllData() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+    });
+    final baseVal = await MicroJobService.getTotalPayoutBase();
+    _payoutInputController.text = baseVal.toStringAsFixed(2);
+    await Future.wait([
+      _loadAllCampaigns(),
+      _loadWebsiteTasks(),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+    });
   }
 
   Future<void> _loadAllCampaigns() async {
@@ -26,17 +55,47 @@ class _AdminCampaignDashboardScreenState extends State<AdminCampaignDashboardScr
           .select()
           .order('created_at', ascending: false);
 
-      setState(() {
-        _campaigns = List<Map<String, dynamic>>.from(res);
-      });
-    } catch (e) {
-      debugPrint('Error loading campaigns: $e');
-    } finally {
       if (mounted) {
         setState(() {
-          _isLoading = false;
+          _campaigns = List<Map<String, dynamic>>.from(res);
         });
       }
+    } catch (e) {
+      debugPrint('Error loading campaigns: $e');
+    }
+  }
+
+  Future<void> _loadWebsiteTasks() async {
+    try {
+      final res = await Supabase.instance.client
+          .from('website_tasks')
+          .select()
+          .order('created_at', ascending: false);
+      if (mounted) {
+        setState(() {
+          _websiteTasks = res.map((e) => Map<String, dynamic>.from(e)).toList();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading website tasks: $e');
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final localList = prefs.getStringList('local_website_tasks') ?? [];
+        final List<Map<String, dynamic>> fallback = [];
+        for (final url in localList) {
+          final isVisible = prefs.getBool('visibility_$url') ?? true;
+          fallback.add({
+            'url': url,
+            'is_visible': isVisible,
+            'id': url.hashCode.toString(),
+          });
+        }
+        if (mounted) {
+          setState(() {
+            _websiteTasks = fallback;
+          });
+        }
+      } catch (_) {}
     }
   }
 
@@ -135,6 +194,317 @@ class _AdminCampaignDashboardScreenState extends State<AdminCampaignDashboardScr
     );
   }
 
+  Future<void> _addWebsiteTask(String url) async {
+    if (url.trim().isEmpty) return;
+    try {
+      await Supabase.instance.client
+          .from('website_tasks')
+          .insert({'url': url.trim(), 'is_visible': true});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Website task added successfully!'), backgroundColor: Colors.green),
+      );
+      _urlInputController.clear();
+      _loadWebsiteTasks();
+    } catch (e) {
+      debugPrint('Error adding website task: $e');
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final localList = prefs.getStringList('local_website_tasks') ?? [];
+        if (!localList.contains(url.trim())) {
+          localList.add(url.trim());
+          await prefs.setStringList('local_website_tasks', localList);
+          await prefs.setBool('visibility_${url.trim()}', true);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Saved locally (Supabase table error)!'), backgroundColor: Colors.orange),
+          );
+          _urlInputController.clear();
+          _loadWebsiteTasks();
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _deleteWebsiteTask(String url) async {
+    final originalTasks = List<Map<String, dynamic>>.from(_websiteTasks);
+    setState(() {
+      _websiteTasks.removeWhere((t) => t['url'] == url);
+    });
+
+    try {
+      await Supabase.instance.client
+          .from('website_tasks')
+          .delete()
+          .eq('url', url);
+      
+      final prefs = await SharedPreferences.getInstance();
+      final localList = prefs.getStringList('local_website_tasks') ?? [];
+      if (localList.contains(url)) {
+        localList.remove(url);
+        await prefs.setStringList('local_website_tasks', localList);
+      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Website task deleted successfully!'), backgroundColor: Colors.green),
+      );
+    } catch (e) {
+      setState(() {
+        _websiteTasks = originalTasks;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error deleting website task: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _toggleWebsiteTaskVisibility(String url, bool currentVisibility) async {
+    setState(() {
+      final index = _websiteTasks.indexWhere((t) => t['url'] == url);
+      if (index != -1) {
+        _websiteTasks[index]['is_visible'] = !currentVisibility;
+      }
+    });
+
+    try {
+      await Supabase.instance.client
+          .from('website_tasks')
+          .update({'is_visible': !currentVisibility})
+          .eq('url', url);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Visibility status updated!'), backgroundColor: Colors.green),
+      );
+    } catch (e) {
+      // Fallback/rollback
+      setState(() {
+        final index = _websiteTasks.indexWhere((t) => t['url'] == url);
+        if (index != -1) {
+          _websiteTasks[index]['is_visible'] = currentVisibility;
+        }
+      });
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('visibility_$url', !currentVisibility);
+        setState(() {
+          final index = _websiteTasks.indexWhere((t) => t['url'] == url);
+          if (index != -1) {
+            _websiteTasks[index]['is_visible'] = !currentVisibility;
+          }
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Updated visibility status locally!'), backgroundColor: Colors.orange),
+        );
+      } catch (_) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating visibility: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _toggleWebsiteTaskDirect(String url, bool currentDirect) async {
+    setState(() {
+      final index = _websiteTasks.indexWhere((t) => t['url'] == url);
+      if (index != -1) {
+        _websiteTasks[index]['is_direct'] = !currentDirect;
+      }
+    });
+
+    try {
+      await Supabase.instance.client
+          .from('website_tasks')
+          .update({'is_direct': !currentDirect})
+          .eq('url', url);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Direct mode updated!'), backgroundColor: Colors.green),
+      );
+    } catch (e) {
+      // Fallback/rollback
+      setState(() {
+        final index = _websiteTasks.indexWhere((t) => t['url'] == url);
+        if (index != -1) {
+          _websiteTasks[index]['is_direct'] = currentDirect;
+        }
+      });
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('direct_$url', !currentDirect);
+        setState(() {
+          final index = _websiteTasks.indexWhere((t) => t['url'] == url);
+          if (index != -1) {
+            _websiteTasks[index]['is_direct'] = !currentDirect;
+          }
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Updated direct mode locally!'), backgroundColor: Colors.orange),
+        );
+      } catch (_) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating direct mode: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Widget _buildWebsiteTasksPanel() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+          child: Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Configure App Total Payouts (USD)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _payoutInputController,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            hintText: 'Enter base total payout amount...',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: () async {
+                          final val = double.tryParse(_payoutInputController.text.trim());
+                          if (val != null) {
+                            await MicroJobService.saveTotalPayoutBase(val);
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Total Payout updated successfully!'), backgroundColor: Colors.green),
+                              );
+                            }
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Please enter a valid numeric value.'), backgroundColor: Colors.red),
+                            );
+                          }
+                        },
+                        child: const Text('Update'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Add Website Visit Job',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _urlInputController,
+                          decoration: const InputDecoration(
+                            hintText: 'Enter target website URL...',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: () {
+                          if (_urlInputController.text.trim().isNotEmpty) {
+                            _addWebsiteTask(_urlInputController.text);
+                          }
+                        },
+                        child: const Text('Add'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: _websiteTasks.isEmpty
+              ? const Center(child: Text('No website visit jobs found.'))
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  itemCount: _websiteTasks.length,
+                  itemBuilder: (context, index) {
+                    final task = _websiteTasks[index];
+                    final url = task['url'] as String;
+                    final isVisible = task['is_visible'] == true;
+                    final isDirect = task['is_direct'] == true;
+                    
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        title: Text(
+                          url,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                        subtitle: Text(
+                          '${isVisible ? "Visible" : "Hidden"} | Mode: ${isDirect ? "Direct Browser" : "In-App Webview"}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isVisible ? Colors.green : Colors.grey,
+                          ),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                isDirect ? Icons.open_in_new : Icons.tab,
+                                color: isDirect ? Colors.purple : Colors.grey,
+                              ),
+                              tooltip: isDirect ? 'Redirection: Direct Browser' : 'Redirection: WebView',
+                              onPressed: () => _toggleWebsiteTaskDirect(url, isDirect),
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                isVisible ? Icons.visibility : Icons.visibility_off,
+                                color: isVisible ? Colors.blue : Colors.grey,
+                              ),
+                              onPressed: () => _toggleWebsiteTaskVisibility(url, isVisible),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () => _deleteWebsiteTask(url),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -149,16 +519,18 @@ class _AdminCampaignDashboardScreenState extends State<AdminCampaignDashboardScr
     final completed = _campaigns.where((c) => c['status'] == 'completed' || c['status'] == 'rejected').toList();
 
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         appBar: widget.showAppBar
             ? AppBar(
                 title: const Text('Admin Campaign Panel', style: TextStyle(fontWeight: FontWeight.bold)),
                 bottom: const TabBar(
+                  isScrollable: true,
                   tabs: [
                     Tab(text: 'Pending'),
                     Tab(text: 'Active / Paused'),
                     Tab(text: 'History'),
+                    Tab(text: 'Website Tasks'),
                   ],
                 ),
               )
@@ -167,10 +539,12 @@ class _AdminCampaignDashboardScreenState extends State<AdminCampaignDashboardScr
                 elevation: 0,
                 backgroundColor: Colors.transparent,
                 bottom: const TabBar(
+                  isScrollable: true,
                   tabs: [
                     Tab(text: 'Pending'),
                     Tab(text: 'Active / Paused'),
                     Tab(text: 'History'),
+                    Tab(text: 'Website Tasks'),
                   ],
                 ),
               ),
@@ -179,6 +553,7 @@ class _AdminCampaignDashboardScreenState extends State<AdminCampaignDashboardScr
             _buildCampaignList(pending),
             _buildCampaignList(active),
             _buildCampaignList(completed),
+            _buildWebsiteTasksPanel(),
           ],
         ),
       ),

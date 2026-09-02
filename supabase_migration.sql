@@ -111,3 +111,76 @@ CREATE POLICY "Users can insert their own reviews"
   ON public.user_completed_reviews
   FOR INSERT
   WITH CHECK (auth.uid() = user_id);
+
+-- 6. Create website tasks table to store visit-website URLs
+CREATE TABLE IF NOT EXISTS public.website_tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  url varchar NOT NULL UNIQUE,
+  is_visible boolean DEFAULT true,
+  created_at timestamptz DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.website_tasks ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.website_tasks ADD COLUMN IF NOT EXISTS is_visible boolean DEFAULT true;
+ALTER TABLE public.website_tasks ADD COLUMN IF NOT EXISTS is_direct boolean DEFAULT false;
+
+DROP POLICY IF EXISTS "Anyone can view website tasks" ON public.website_tasks;
+CREATE POLICY "Anyone can view website tasks"
+  ON public.website_tasks
+  FOR SELECT
+  USING (true);
+
+DROP POLICY IF EXISTS "Admins can manage website tasks" ON public.website_tasks;
+CREATE POLICY "Admins can manage website tasks"
+  ON public.website_tasks
+  FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.profiles
+      WHERE profiles.id = auth.uid() AND (profiles.username LIKE '%admin%' OR profiles.username LIKE '%staff%')
+    )
+  );
+
+-- Seed initial website links
+INSERT INTO public.website_tasks (url, is_visible) VALUES
+  ('https://www.profitableratecpmnetwork.com/chrbnk3865?key=a94643bb549f8e0c76e4fa34b3041468', true),
+  ('https://www.profitableratecpmnetwork.com/jmq51gqwmj?key=5a1f43bebb2399ff8b697c3e6520b092', true),
+  ('https://www.profitableratecpmnetwork.com/ng0muydek8?key=ca8a96af33fe76b70e804e7a9b944fda', true),
+  ('https://www.profitableratecpmnetwork.com/wjxp5816d?key=815fccee5f572eedcc89699cb6d4e7cc', true),
+  ('https://www.profitableratecpmnetwork.com/hfwzvp5hw?key=9d67d4c9254359b8de5e5123898a00b7', true),
+  ('https://www.profitableratecpmnetwork.com/pvms5sdi28?key=e7714064cc2f40fb7b357f826e40c910', true),
+  ('https://www.profitableratecpmnetwork.com/fwqa4t7p?key=e7ac381e69c2426bfbf1e5c327876bb8', true),
+  ('https://www.profitableratecpmnetwork.com/cntr3s5zd?key=31be3450feaa26807e3a998b40a08f9f', true),
+  ('https://www.profitableratecpmnetwork.com/eepv3zn8?key=46237b4eae98c1640f8f0d2dee0a7eb5', true),
+  ('https://www.profitableratecpmnetwork.com/ensmm8ye4a?key=c8f0e696e0e2687122edea923628e1b1', true)
+ON CONFLICT (url) DO NOTHING;
+
+-- 7. Create app settings table for global configuration
+CREATE TABLE IF NOT EXISTS public.app_settings (
+  key varchar PRIMARY KEY,
+  value varchar NOT NULL,
+  updated_at timestamptz DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view app settings" ON public.app_settings;
+CREATE POLICY "Anyone can view app settings" ON public.app_settings FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Admins can manage app settings" ON public.app_settings;
+CREATE POLICY "Admins can manage app settings" ON public.app_settings FOR ALL USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE profiles.id = auth.uid() AND (profiles.username LIKE '%admin%' OR profiles.username LIKE '%staff%')
+  )
+);
+
+INSERT INTO public.app_settings (key, value) VALUES ('total_payout_usd', '132450.80') ON CONFLICT (key) DO NOTHING;
+
+-- 8. Add is_tasks_unlocked column to public.profiles
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_tasks_unlocked boolean DEFAULT false;
+
+-- Seed existing user profiles (old users) to have tasks unlocked automatically
+UPDATE public.profiles SET is_tasks_unlocked = true WHERE is_tasks_unlocked IS NULL;
+

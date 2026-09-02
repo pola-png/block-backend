@@ -7,6 +7,9 @@ class AppReviewService {
 
   static final InAppReview _inAppReview = InAppReview.instance;
 
+  /// Exposes the InAppReview instance for direct use (e.g. requestReview()).
+  static InAppReview get inAppReview => _inAppReview;
+
   /// Requests a native in-app review popup. 
   /// Falls back to launching the store URL if in-app review is unavailable.
   static Future<void> requestReview() async {

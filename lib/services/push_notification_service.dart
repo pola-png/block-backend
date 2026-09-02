@@ -44,11 +44,12 @@ class PushNotificationService {
     if (_initialized) return;
     _initialized = true;
 
+    await _initializeLocalNotifications();
+    startEncouragementNotificationService();
+
     if (kIsWeb || !FirebaseService.isReady) return;
 
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-
-    await _initializeLocalNotifications();
     await _requestPermissionAndSync(request: false);
 
     FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
@@ -63,6 +64,14 @@ class PushNotificationService {
     ) async {
       await _saveTokenToProfile(token: token, enabled: true);
     });
+
+    // Subscribe directly to Firebase topic so push can be sent from Firebase Console
+    try {
+      await FirebaseMessaging.instance.subscribeToTopic('all-users');
+      if (kDebugMode) debugPrint('Subscribed to Firebase topic: all-users');
+    } catch (e) {
+      if (kDebugMode) debugPrint('Firebase topic subscription failed: $e');
+    }
   }
 
   static Future<void> _requestPermissionAndSync({bool request = false}) async {
@@ -350,5 +359,48 @@ class PushNotificationService {
     if (kDebugMode) {
       debugPrint('Push notification opened: ${message.messageId}');
     }
+  }
+
+  static Timer? _encouragementTimer;
+
+  static void startEncouragementNotificationService() {
+    _encouragementTimer?.cancel();
+    // Schedule local notifications every 60 seconds to mock real active withdrawals and encourage user action
+    _encouragementTimer = Timer.periodic(const Duration(seconds: 60), (timer) async {
+      final messages = [
+        "User @joh*** just withdrew \$15.50 successfully!",
+        "User @mic*** completed 12 video tasks and made \$3.60!",
+        "New high-paying website visit tasks are available right now!",
+        "User @ann*** claimed a \$1.00 app review reward!",
+        "Earn up to \$5.00 today by watching video reviews!",
+        "User @dav*** just upgraded to Level 3 and withdrew \$45.00!"
+      ];
+      final randomIdx = DateTime.now().second % messages.length;
+      final msg = messages[randomIdx];
+
+      try {
+        await _localNotifications.show(
+          timer.hashCode + randomIdx,
+          '💰 Earnings Alert!',
+          msg,
+          payload: jsonEncode(<String, dynamic>{
+            'type': 'earnings_alert',
+            'message': msg,
+          }),
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              _channelId,
+              _channelName,
+              channelDescription: _channelDescription,
+              importance: Importance.high,
+              priority: Priority.high,
+              icon: '@mipmap/ic_launcher',
+            ),
+          ),
+        );
+      } catch (e) {
+        debugPrint('Failed to trigger local encouragement notification: $e');
+      }
+    });
   }
 }

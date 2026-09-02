@@ -42,6 +42,7 @@ import 'services/network_status_service.dart';
 import 'services/realtime_gateway.dart';
 import 'services/device_mode_service.dart';
 import 'services/navigation_service.dart';
+import 'services/ad_gate_service.dart';
 import 'providers/theme_provider.dart';
 import 'theme/app_theme.dart';
 
@@ -99,6 +100,20 @@ Future<void> _bootstrapCriticalServices() async {
   try {
     await BackendService.initialize();
   } catch (_) {}
+  if (!kIsWeb && !DeviceModeService.isTv) {
+    try {
+      await MobileAds.instance.initialize();
+      if (kDebugMode) {
+        await MobileAds.instance.updateRequestConfiguration(
+          RequestConfiguration(
+            testDeviceIds: ['93B5FC3B503A1A45170BFE3370D4426F'],
+          ),
+        );
+      }
+      // Wait for the App Open Ad to be preloaded (up to 2.5 seconds timeout inside init)
+      await XapZapAdGateService.instance.init();
+    } catch (_) {}
+  }
 }
 
 Future<void> _bootstrapBackgroundServices() async {
@@ -126,18 +141,6 @@ Future<void> _bootstrapBackgroundServices() async {
   try {
     RealtimeGateway.initialize();
   } catch (_) {}
-  if (!kIsWeb && !DeviceModeService.isTv) {
-    try {
-      await MobileAds.instance.initialize();
-      if (kDebugMode) {
-        await MobileAds.instance.updateRequestConfiguration(
-          RequestConfiguration(
-            testDeviceIds: ['93B5FC3B503A1A45170BFE3370D4426F'],
-          ),
-        );
-      }
-    } catch (_) {}
-  }
   if (!kIsWeb && !DeviceModeService.isTv) {
     unawaited(NativeAdPreloadService.warmupFast(maxSlotIndex: 2));
   }
@@ -170,6 +173,7 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForAppUpdate();
+      XapZapAdGateService.instance.showAppOpenAdIfAvailable();
     });
   }
 
@@ -183,6 +187,7 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(PostViewRetryQueue.flushPending());
+      XapZapAdGateService.instance.showAppOpenAdIfAvailable();
     }
   }
 

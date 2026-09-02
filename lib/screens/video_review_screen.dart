@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/micro_job_service.dart';
@@ -26,6 +27,7 @@ class VideoReviewScreen extends StatefulWidget {
 class _VideoReviewScreenState extends State<VideoReviewScreen> {
   WebViewController? _webViewController;
   YoutubePlayerController? _youtubeController;
+  VideoPlayerController? _videoController; // For direct MP4 URLs
   bool _isVideoLoaded = false;
   bool _watchComplete = false;
   int _secondsRemaining = 15; // Default short test countdown, will calculate below
@@ -42,6 +44,9 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
   RewardedAd? _endAd;
   bool _startAdCompleted = false;
   bool _endAdCompleted = false;
+  int _secondsWatched = 0; // Tracks total seconds watched during this video mission
+  bool _adTriggerActive = false; // Prevents timer loops from overlapping during ad plays
+  bool _isDurationSet = false; // Prevents overriding secondsRemaining when resuming play
   @override
   void initState() {
     super.initState();
@@ -60,8 +65,9 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
   }
 
   void _calculateWatchTarget() {
-    final int videoDurationMins = widget.campaign['duration_minutes'] as int? ?? 1;
-    _secondsRemaining = videoDurationMins * 60;
+    // We will calculate the final target dynamically during video initialization 
+    // to match the exact duration of the video. Default placeholder:
+    _secondsRemaining = 1200; 
   }
 
   void _initializePlayer() {
@@ -69,6 +75,7 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
     final videoId = YoutubePlayerController.convertUrlToId(originalUrl);
 
     if (videoId != null) {
+      // --- YouTube video ---
       _youtubeController = YoutubePlayerController.fromVideoId(
         videoId: videoId,
         autoPlay: false,
@@ -78,16 +85,51 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
           mute: false,
         ),
       );
+      _isVideoLoaded = true;
+      _startTimer();
+      
       _youtubeController!.listen((value) {
         if (!mounted) return;
-        if (value.playerState == PlayerState.playing && !_isVideoLoaded) {
+        if (value.playerState == PlayerState.playing && !_isDurationSet) {
           setState(() {
-            _isVideoLoaded = true;
+            _isDurationSet = true;
+            // Fetch YouTube video metadata duration
+            final int durationSec = value.metaData.duration.inSeconds;
+            if (durationSec > 0) {
+              // If video is longer than 20 mins, require 20 mins. Otherwise, watch to the end.
+              _secondsRemaining = durationSec < 1200 ? durationSec : 1200;
+            }
           });
-          _startTimer();
         }
       });
+    } else if (originalUrl.isNotEmpty &&
+        (originalUrl.toLowerCase().contains('.mp4') ||
+            originalUrl.toLowerCase().contains('.mov') ||
+            originalUrl.toLowerCase().contains('.m3u8'))) {
+      // --- Direct MP4/video URL (admin Level 1 videos) ---
+      _videoController =
+          VideoPlayerController.networkUrl(Uri.parse(originalUrl))
+            ..initialize().then((_) {
+              if (!mounted) return;
+              setState(() {
+                _isVideoLoaded = true;
+                // If video is longer than 20 mins, require 20 mins. Otherwise, watch to the end.
+                final int durationSeconds = _videoController!.value.duration.inSeconds;
+                _secondsRemaining = durationSeconds < 1200 ? durationSeconds : 1200;
+              });
+              _videoController!.play();
+              _startTimer();
+            }).catchError((error) {
+              debugPrint('VideoPlayer error in review screen: $error');
+              if (!mounted) return;
+              setState(() {
+                _isVideoLoaded = true;
+                _secondsRemaining = 60; // Fallback 60-second countdown
+              });
+              _startTimer();
+            });
     } else {
+      // --- Generic URL via WebView ---
       _webViewController = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(const Color(0x00000000))
@@ -126,9 +168,27 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
     _countdownTimer?.cancel();
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) return;
-      
-      // Pause countdown if YouTube video is paused/buffering/etc.
-      if (_youtubeController != null && _youtubeController!.value.playerState != PlayerState.playing) {
+
+      // Do not count down or increment if an ad is actively playing
+      if (_adTriggerActive) return;
+
+      // Pause countdown if YouTube video is paused/buffering
+      if (_youtubeController != null &&
+          _youtubeController!.value.playerState != PlayerState.playing) {
+        return;
+      }
+
+      // Pause countdown if native video_player is paused
+      if (_videoController != null && !_videoController!.value.isPlaying) {
+        return;
+      }
+
+      // Increment seconds watched
+      _secondsWatched++;
+
+      // Check if 4 minutes (240 seconds) has passed
+      if (_secondsWatched > 0 && _secondsWatched % 240 == 0) {
+        _triggerMidRollAd();
         return;
       }
 
@@ -143,6 +203,85 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
         });
       }
     });
+  }
+
+  Future<void> _triggerMidRollAd() async {
+    setState(() {
+      _adTriggerActive = true;
+    });
+
+    // 1. Pause video players
+    if (_youtubeController != null) {
+      try {
+        _youtubeController!.pauseVideo();
+      } catch (_) {}
+    }
+    if (_videoController != null) {
+      try {
+        _videoController!.pause();
+      } catch (_) {}
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ad Intermission: Video paused for rewarded ad placement.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+
+    // 2. Load and show mid-roll rewarded ad
+    final completer = Completer<void>();
+    RewardedAd.load(
+      adUnitId: AdHelper.rewarded,
+      request: AdHelper.financialRequest,
+      rewardedAdLoadCallback: RewardedAdLoadCallback(
+        onAdLoaded: (ad) {
+          ad.fullScreenContentCallback = FullScreenContentCallback(
+            onAdDismissedFullScreenContent: (dismissedAd) {
+              dismissedAd.dispose();
+              if (!completer.isCompleted) completer.complete();
+            },
+            onAdFailedToShowFullScreenContent: (failedAd, error) {
+              failedAd.dispose();
+              if (!completer.isCompleted) completer.complete();
+            },
+          );
+          ad.show(onUserEarnedReward: (showAd, reward) {
+            // User gets verification progression but needs to finish video watch
+          });
+        },
+        onAdFailedToLoad: (error) {
+          if (!completer.isCompleted) completer.complete();
+        },
+      ),
+    );
+
+    await completer.future.timeout(
+      const Duration(seconds: 45),
+      onTimeout: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+
+    // 3. Resume video players after ad dismissal
+    if (_youtubeController != null) {
+      try {
+        _youtubeController!.playVideo();
+      } catch (_) {}
+    }
+    if (_videoController != null) {
+      try {
+        _videoController!.play();
+      } catch (_) {}
+    }
+
+    if (mounted) {
+      setState(() {
+        _adTriggerActive = false;
+      });
+    }
   }
 
   Future<void> _submitReview() async {
@@ -224,6 +363,7 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
     _startAd?.dispose();
     _endAd?.dispose();
     _youtubeController?.close();
+    _videoController?.dispose();
     super.dispose();
   }
 
@@ -279,16 +419,77 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
                   ? YoutubePlayer(
                       controller: _youtubeController!,
                     )
-                  : Stack(
-                      children: [
-                        if (_webViewController != null)
-                          WebViewWidget(controller: _webViewController!),
-                        if (!_isVideoLoaded)
-                          const Center(
-                            child: CircularProgressIndicator(color: Colors.pinkAccent),
-                          ),
-                      ],
-                    ),
+                  : _videoController != null
+                      // Native video_player for direct MP4 (Level 1 admin videos)
+                      ? Stack(
+                          children: [
+                            Center(
+                              child: _videoController!.value.isInitialized
+                                  ? GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () {
+                                        if (_videoController!.value.isPlaying) {
+                                          _videoController!.pause();
+                                        } else {
+                                          _videoController!.play();
+                                        }
+                                        setState(() {});
+                                      },
+                                      child: AspectRatio(
+                                        aspectRatio:
+                                            _videoController!.value.aspectRatio,
+                                        child: VideoPlayer(_videoController!),
+                                      ),
+                                    )
+                                  : const CircularProgressIndicator(
+                                      color: Colors.pinkAccent),
+                            ),
+                            if (_videoController!.value.isInitialized)
+                              Positioned(
+                                top: 12,
+                                right: 12,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        _videoController!.value.isPlaying
+                                            ? Icons.play_arrow_rounded
+                                            : Icons.pause_rounded,
+                                        color: Colors.pinkAccent,
+                                        size: 14,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '${_secondsRemaining}s left',
+                                        style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        )
+                      : Stack(
+                          children: [
+                            if (_webViewController != null)
+                              WebViewWidget(controller: _webViewController!),
+                            if (!_isVideoLoaded)
+                              const Center(
+                                child: CircularProgressIndicator(
+                                    color: Colors.pinkAccent),
+                              ),
+                          ],
+                        ),
             ),
 
             // Info & Countdown Bar
@@ -407,7 +608,7 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
     final completer = Completer<void>();
     RewardedAd.load(
       adUnitId: AdHelper.rewarded,
-      request: const AdRequest(),
+      request: AdHelper.financialRequest,
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
           _startAd = ad;
@@ -444,7 +645,7 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
     final completer = Completer<void>();
     RewardedAd.load(
       adUnitId: AdHelper.rewarded,
-      request: const AdRequest(),
+      request: AdHelper.financialRequest,
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
           _endAd = ad;

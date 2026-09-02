@@ -9,6 +9,7 @@ import 'settings/notifications_settings_screen.dart';
 import 'settings/help_settings_screen.dart';
 import '../services/backend_service.dart';
 import '../widgets/tv_focusable_action.dart';
+import 'admin_earnings_control_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -149,8 +150,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           
           if (!_isLoadingAdmin && _actualIsAdmin) ...[
             const SizedBox(height: 16),
+            _buildMenuItem(
+              context,
+              icon: LucideIcons.shieldAlert,
+              title: 'Admin Earnings & Fraud Control',
+              description: 'Adjust balances, monitor task counts, and manage fraud alert warnings',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const AdminEarningsControlScreen()),
+                );
+              },
+            ),
+            const SizedBox(height: 16),
             SwitchListTile(
-              secondary: Icon(LucideIcons.shieldAlert, color: theme.colorScheme.primary),
+              secondary: Icon(LucideIcons.shield, color: theme.colorScheme.primary),
               title: const Text('Admin View Mode', style: TextStyle(fontWeight: FontWeight.bold)),
               subtitle: const Text('Toggle between admin controls and standard user view'),
               activeColor: Colors.pinkAccent,
