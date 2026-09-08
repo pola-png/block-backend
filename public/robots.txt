@@ -1,0 +1,9 @@
+# *
+User-agent: *
+Allow: /
+
+# Host
+Host: https://xapzap.com
+
+# Sitemaps
+Sitemap: https://xapzap.com/sitemap.xml

@@ -1,0 +1,1 @@
+ C:\\XapZap\\xapzap\\.dart_tool\\flutter_build\\ebc207d93ce6f41a22ea285c9a53bb59\\native_assets.json: 

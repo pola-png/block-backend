@@ -1,0 +1,27 @@
+{
+  "projectId": "690641ad0029b51eefe0",
+  "projectName": "XapZap",
+  "functions": [
+    {
+      "$id": "upload-media",
+      "name": "upload-media",
+      "runtime": "node-18.0",
+      "path": "functions/upload-media",
+      "entrypoint": "src/main.js",
+      "execute": ["users"],
+      "events": [],
+      "schedule": "",
+      "timeout": 300,
+      "enabled": true,
+      "logging": true,
+      "scopes": [],
+      "variables": {
+        "WASABI_ACCESS_KEY": "",
+        "WASABI_SECRET_KEY": "",
+        "WASABI_REGION": "us-east-1",
+        "WASABI_ENDPOINT": "https://s3.wasabisys.com",
+        "WASABI_BUCKET": "xapzap-media"
+      }
+    }
+  ]
+}

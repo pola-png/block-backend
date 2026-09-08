@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "badmuscodehive.appldq",
+      "sha256_cert_fingerprints": [
+        "30:DF:F3:44:F6:71:20:72:D0:F2:88:9D:AD:E1:69:31:4C:0C:8A:AB:F0:08:6C:C0:6B:5E:AF:92:BB:AF:53:95"
+      ]
+    }
+  }
+]

@@ -1,0 +1,21 @@
+const fs = require('fs');
+const path = require('path');
+
+console.log('Preparing functions for separate repository...');
+console.log('');
+console.log('Next steps:');
+console.log('1. Create new GitHub repo: xapzap-functions');
+console.log('2. Copy the "functions" folder to the new repo');
+console.log('3. Push to GitHub');
+console.log('4. Connect to Appwrite Console');
+console.log('');
+console.log('Files ready in: ./functions/');
+console.log('');
+console.log('Commands to run:');
+console.log('  cd ../');
+console.log('  git clone https://github.com/YOUR_USERNAME/xapzap-functions.git');
+console.log('  cp -r xapzap-web/functions/* xapzap-functions/');
+console.log('  cd xapzap-functions');
+console.log('  git add .');
+console.log('  git commit -m "Initial commit"');
+console.log('  git push origin main');

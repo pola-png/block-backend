@@ -1,0 +1,12 @@
+{
+  "name": "upload-media",
+  "version": "1.0.0",
+  "description": "Upload media files to Wasabi storage",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.400.0"
+  }
+}
