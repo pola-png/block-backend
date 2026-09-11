@@ -225,44 +225,44 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
   }
 
   double _getRewardForPost(String postId) {
-    final mod = postId.hashCode.abs() % 5;
-    double minRate = 0.02;
-    double step = 0.01;
+    final mod = postId.hashCode.abs() % 10;
+    double base = 0.20 + (mod * 0.03);
     if (_userLevel == 2) {
-      minRate = 0.07;
-      step = 0.02;
+      base *= 1.5; // Level 2 Bronze
     } else if (_userLevel == 3) {
-      minRate = 0.16;
-      step = 0.035;
+      base *= 2.2; // Level 3 Silver
     } else if (_userLevel >= 4) {
-      minRate = 0.18;
-      step = 0.042;
+      base *= 3.2; // Level 4 Gold
     }
-    return minRate + (mod * step);
+    return double.parse(base.toStringAsFixed(2));
   }
 
   double _getRewardForCampaign(Map<String, dynamic> campaign) {
     final int duration = campaign['duration_minutes'] as int? ?? 1;
-    int campaignLevel = 2;
-    if (duration > 10 && duration <= 30) campaignLevel = 3;
-    if (duration > 30) campaignLevel = 4;
-
-    if (campaignLevel == 3) {
-      final d = duration.clamp(11, 30);
-      return 0.30 + ((d - 11) / (30 - 11)) * (0.60 - 0.30);
-    } else if (campaignLevel >= 4) {
-      final d = duration.clamp(31, 60);
-      return 0.60 + ((d - 31) / (60 - 31)) * (1.00 - 0.60);
-    } else {
-      final d = duration.clamp(1, 10);
-      return 0.10 + ((d - 1) / (10 - 1)) * (0.30 - 0.10);
+    final d = duration.clamp(1, 60);
+    double base = 0.20 + ((d - 1) / (60 - 1)) * (0.50 - 0.20);
+    
+    if (_userLevel == 2) {
+      base = 0.30 + ((d - 1) / (60 - 1)) * (0.60 - 0.30);
+    } else if (_userLevel == 3) {
+      base = 0.50 + ((d - 1) / (60 - 1)) * (0.85 - 0.50);
+    } else if (_userLevel >= 4) {
+      base = 0.80 + ((d - 1) / (60 - 1)) * (1.50 - 0.80);
     }
+    return double.parse(base.toStringAsFixed(2));
   }
 
   double _getRewardForWebsiteTask(String url) {
     final mod = url.hashCode.abs() % 10;
-    final val = 0.20 + (mod * 0.033);
-    return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
+    double base = 0.20 + (mod * 0.03);
+    if (_userLevel == 2) {
+      base *= 1.5; // Level 2 Bronze
+    } else if (_userLevel == 3) {
+      base *= 2.2; // Level 3 Silver
+    } else if (_userLevel >= 4) {
+      base *= 3.2; // Level 4 Gold
+    }
+    return double.parse(base.toStringAsFixed(2));
   }
 
   Future<void> _completeAppReviewFlow() async {

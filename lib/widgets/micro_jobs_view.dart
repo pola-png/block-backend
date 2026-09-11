@@ -519,18 +519,31 @@ class _MicroJobsViewState extends State<MicroJobsView> {
   }
 
   double _getRewardForPost(String postId) {
-    // Task payouts are bounded strictly between $0.20 (min) and $0.50 (max)
     final mod = postId.hashCode.abs() % 10;
-    final val = 0.20 + (mod * 0.033);
-    return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
+    double base = 0.20 + (mod * 0.03);
+    if (_userLevel == 2) {
+      base *= 1.5; // Level 2 Bronze
+    } else if (_userLevel == 3) {
+      base *= 2.2; // Level 3 Silver
+    } else if (_userLevel >= 4) {
+      base *= 3.2; // Level 4 Gold
+    }
+    return double.parse(base.toStringAsFixed(2));
   }
 
   double _getRewardForCampaign(Map<String, dynamic> campaign) {
-    // Review payouts bounded strictly between $0.20 (min) and $0.50 (max)
     final int duration = campaign['duration_minutes'] as int? ?? 1;
     final d = duration.clamp(1, 60);
-    final val = 0.20 + ((d - 1) / (60 - 1)) * (0.50 - 0.20);
-    return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
+    double base = 0.20 + ((d - 1) / (60 - 1)) * (0.50 - 0.20);
+    
+    if (_userLevel == 2) {
+      base = 0.30 + ((d - 1) / (60 - 1)) * (0.60 - 0.30);
+    } else if (_userLevel == 3) {
+      base = 0.50 + ((d - 1) / (60 - 1)) * (0.85 - 0.50);
+    } else if (_userLevel >= 4) {
+      base = 0.80 + ((d - 1) / (60 - 1)) * (1.50 - 0.80);
+    }
+    return double.parse(base.toStringAsFixed(2));
   }
 
   void _onAdminOverrideChanged() {
