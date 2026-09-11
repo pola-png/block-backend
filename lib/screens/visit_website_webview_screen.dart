@@ -32,6 +32,17 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
     _initWebView();
     _loadBannerAd();
     _startTimer();
+    _openInExternalBrowser();
+  }
+
+  void _openInExternalBrowser() async {
+    try {
+      final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
+      final uri = Uri.parse(cleanUrl);
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint('Could not launch URL in external browser: $e');
+    }
   }
 
   void _initWebView() {

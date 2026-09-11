@@ -29,7 +29,7 @@ class VisitWebsiteGatewayScreen extends StatefulWidget {
 }
 
 class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
-  int _secondsRemaining = 20;
+  int _secondsRemaining = 5;
   Timer? _timer;
   bool _canProceed = false;
 
@@ -172,7 +172,7 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                             width: 100,
                             height: 100,
                             child: CircularProgressIndicator(
-                              value: (20 - _secondsRemaining) / 20,
+                              value: (5 - _secondsRemaining) / 5,
                               strokeWidth: 8,
                               valueColor: AlwaysStoppedAnimation<Color>(
                                 _canProceed ? Colors.green : Colors.pinkAccent,
@@ -198,45 +198,14 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: _canProceed
-                            ? () async {
-                                if (widget.isDirect) {
-                                  // Open URL directly in external browser and pop this screen
-                                  try {
-                                    final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
-                                    final uri = Uri.parse(cleanUrl);
-                                    await launchUrl(uri, mode: LaunchMode.externalApplication);
-                                    // Credit reward
-                                     final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
-                                     await MicroJobService.rewardUser('visit_website_${widget.url.hashCode}', reward);
-                                     if (mounted) {
-                                       ScaffoldMessenger.of(context).showSnackBar(
-                                         SnackBar(content: Text('🎉 \$${reward.toStringAsFixed(2)} reward credited!'), backgroundColor: Colors.green),
-                                       );
-                                       Navigator.pop(context);
-                                     }
-                                   } catch (e) {
-                                     debugPrint('Could not launch URL directly: $e');
-                                     // Fallback to embedded WebView if launch fails
-                                     if (mounted) {
-                                       final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
-                                       Navigator.pushReplacement(
-                                         context,
-                                         MaterialPageRoute(
-                                           builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
-                                         ),
-                                       );
-                                     }
-                                   }
-                                 } else {
-                                   // Navigate to WebView and pop this gateway screen
-                                   final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
-                                   Navigator.pushReplacement(
-                                     context,
-                                     MaterialPageRoute(
-                                       builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
-                                     ),
-                                   );
-                                 }
+                            ? () {
+                                final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
+                                Navigator.pushReplacement(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
+                                  ),
+                                );
                               }
                             : null,
                         child: const Text(
