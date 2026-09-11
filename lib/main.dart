@@ -282,9 +282,7 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
             themeMode: themeProvider.themeMode,
             home: const _LaunchRouter(),
             routes: {
-              '/main': (context) => (kIsWeb || DeviceModeService.isTv)
-                  ? const MainScreen()
-                  : const AuthWrapper(),
+              '/main': (context) => const AuthWrapper(),
               '/signin': (context) => const SignInScreen(),
               '/signup': (context) => const SignUpScreen(),
               '/privacy': (context) => const PrivacyPolicyScreen(),
@@ -416,8 +414,7 @@ class DecisionScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // On web and TV, let users browse as guests without forcing auth.
-    if (kIsWeb || DeviceModeService.isTv) {
+    if (DeviceModeService.isTv) {
       return const MainScreen();
     }
     return const AuthWrapper();
