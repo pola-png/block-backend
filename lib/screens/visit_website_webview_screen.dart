@@ -38,12 +38,10 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
     try {
       final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
       final uri = Uri.parse(cleanUrl);
-      bool launched = false;
-      try {
-        launched = await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
-      } catch (_) {}
-      if (!launched) {
+      if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
       }
     } catch (e) {
       debugPrint('Could not launch URL in external browser: $e');
