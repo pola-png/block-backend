@@ -20,7 +20,7 @@ class VisitWebsiteGatewayScreen extends StatefulWidget {
   const VisitWebsiteGatewayScreen({
     super.key,
     required this.url,
-    this.isDirect = false,
+    this.isDirect = true,
     this.rewardAmount = 0.20,
   });
 
@@ -202,7 +202,8 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                                 if (widget.isDirect) {
                                   // Open URL directly in external browser and pop this screen
                                   try {
-                                    final uri = Uri.parse(widget.url);
+                                    final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
+                                    final uri = Uri.parse(cleanUrl);
                                     await launchUrl(uri, mode: LaunchMode.externalApplication);
                                     // Credit reward
                                      final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);

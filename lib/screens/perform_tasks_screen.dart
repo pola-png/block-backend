@@ -912,7 +912,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                           MaterialPageRoute(
                             builder: (context) => VisitWebsiteGatewayScreen(
                               url: url,
-                              isDirect: _websiteTasksDirectMap[url] ?? false,
+                              isDirect: true,
                               rewardAmount: _getRewardForWebsiteTask(url),
                             ),
                           ),
