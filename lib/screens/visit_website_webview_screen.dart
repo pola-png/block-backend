@@ -32,9 +32,6 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
     _initWebView();
     _loadBannerAd();
     _startTimer();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _openInExternalBrowser();
-    });
   }
 
   void _openInExternalBrowser() async {

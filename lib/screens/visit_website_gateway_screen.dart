@@ -200,7 +200,7 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                         onPressed: _canProceed
                             ? () {
                                 final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
-                                Navigator.pushReplacement(
+                                Navigator.push(
                                   context,
                                   MaterialPageRoute(
                                     builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
