@@ -29,7 +29,7 @@ class VisitWebsiteGatewayScreen extends StatefulWidget {
 }
 
 class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
-  int _secondsRemaining = 20;
+  int _secondsRemaining = 5;
   Timer? _timer;
   bool _canProceed = false;
 
@@ -172,7 +172,7 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                             width: 100,
                             height: 100,
                             child: CircularProgressIndicator(
-                              value: (20 - _secondsRemaining) / 20,
+                              value: (5 - _secondsRemaining) / 5,
                               strokeWidth: 8,
                               valueColor: AlwaysStoppedAnimation<Color>(
                                 _canProceed ? Colors.green : Colors.pinkAccent,

@@ -17,7 +17,7 @@ class VisitWebsiteWebviewScreen extends StatefulWidget {
 
 class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
   late final WebViewController _webViewController;
-  int _secondsRemaining = 15;
+  int _secondsRemaining = 5;
   Timer? _timer;
   bool _completed = false;
   bool _isLoading = true;
@@ -169,7 +169,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
                   width: 24,
                   height: 24,
                   child: CircularProgressIndicator(
-                    value: (15 - _secondsRemaining) / 15,
+                    value: (5 - _secondsRemaining) / 5,
                     strokeWidth: 3,
                     valueColor: const AlwaysStoppedAnimation<Color>(Colors.pinkAccent),
                   ),

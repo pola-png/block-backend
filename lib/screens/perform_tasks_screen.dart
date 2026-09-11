@@ -58,6 +58,81 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
     _loadStateAndJobs();
     _startCooldownCountdown();
     _loadBannerAd();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAdAwarenessConsent();
+    });
+  }
+
+  Future<void> _checkAdAwarenessConsent() async {
+    final prefs = await SharedPreferences.getInstance();
+    final accepted = prefs.getBool('has_accepted_ad_awareness') ?? false;
+    if (!accepted && mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) {
+          final isDark = Theme.of(context).brightness == Brightness.dark;
+          return AlertDialog(
+            backgroundColor: isDark ? Colors.grey.shade900 : Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.ads_click, color: Colors.pinkAccent, size: 28),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Ads Support Earnings 💎',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Welcome to Available Tasks!',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'XapZap provides high cash rewards for completing tasks. To maintain these high payouts and support the platform, short ads and rewarded videos are shown when performing tasks.',
+                  style: TextStyle(fontSize: 13, height: 1.4, color: isDark ? Colors.white70 : Colors.grey.shade800),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '• Every completed task credits real earnings to your balance.\n'
+                  '• Watching short sponsor ads helps keep payout rates high (\$0.20 - \$1.50+).\n'
+                  '• By proceeding, you agree to support the app through ads.',
+                  style: TextStyle(fontSize: 12, height: 1.5, color: isDark ? Colors.white54 : Colors.grey.shade600),
+                ),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.pinkAccent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                onPressed: () async {
+                  await prefs.setBool('has_accepted_ad_awareness', true);
+                  if (context.mounted) {
+                    Navigator.pop(context);
+                  }
+                },
+                child: const Text(
+                  'I Understand & Always Accept',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+    }
   }
 
   @override
