@@ -6,6 +6,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:crypto/crypto.dart';
 import '../models/database_models.dart' as models;
 import '../models/database_models.dart' show Query, ID, DatabaseException, Client, Account, Functions, Storage, InputFile, Permission, Role, Messaging, enums;
+import 'package:http/http.dart' as http;
+import 'micro_job_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -493,6 +495,25 @@ class BackendService {
       _isAdminCache = false;
     }
 
+    // Fetch network public IP for strict anti-cheat referral verification
+    String signupIp = '';
+    try {
+      final ipRes = await http.get(Uri.parse('https://api.ipify.org')).timeout(const Duration(seconds: 4));
+      if (ipRes.statusCode == 200) {
+        signupIp = ipRes.body.trim();
+      }
+    } catch (_) {}
+
+    // Store signup_ip in profile
+    if (signupIp.isNotEmpty) {
+      try {
+        await Supabase.instance.client
+            .from('profiles')
+            .update({'signup_ip': signupIp})
+            .eq('id', user.id);
+      } catch (_) {}
+    }
+
     final safeReferralCode = referralCode?.trim() ?? '';
     if (safeReferralCode.isNotEmpty) {
       try {
@@ -503,6 +524,35 @@ class BackendService {
             .trim();
 
         if (referrerUserId.isNotEmpty && referrerUserId != createdUser.$id) {
+          // Strict IP anti-cheat verification: compare network IP
+          bool ipMatch = false;
+          if (signupIp.isNotEmpty) {
+            final referrerIp = referrerProfile?.data['signup_ip'] as String? ?? '';
+            if (referrerIp.isNotEmpty && referrerIp == signupIp) {
+              ipMatch = true;
+            } else {
+              try {
+                final existingIpProfiles = await Supabase.instance.client
+                    .from('profiles')
+                    .select('id')
+                    .eq('signup_ip', signupIp);
+                if (existingIpProfiles.length > 1) {
+                  ipMatch = true;
+                }
+              } catch (_) {}
+            }
+          }
+
+          if (ipMatch) {
+            // Self-referral / duplicate IP cheating attempt detected: void rewards!
+            debugPrint('Referral reward voided: IP match detected ($signupIp)');
+            throw const AuthException('Referral reward voided: Multiple sign-ups detected from the same network IP. Referral anti-cheat rules strictly apply.');
+          } else {
+            // Valid referral: Credit Referrer $5.00 and Referred User $3.00
+            await MicroJobService.rewardUserDirectly(referrerUserId, 5.00);
+            await MicroJobService.rewardUserDirectly(createdUser.$id, 3.00);
+          }
+
           final alreadyFollowing =
               await isFollowing(createdUser.$id, referrerUserId);
           if (!alreadyFollowing) {
@@ -520,6 +570,8 @@ class BackendService {
             );
           }
         }
+      } on AuthException {
+        rethrow;
       } catch (_) {}
     }
 
@@ -4813,6 +4865,8 @@ class RealtimeSubscription {
       _supabaseChannels.add(supabaseChannel);
     }
   }
+
+  void cancel() => close();
 
   void close() {
     for (final channel in _supabaseChannels) {

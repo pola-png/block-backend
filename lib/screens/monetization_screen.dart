@@ -15,7 +15,7 @@ class MonetizationScreen extends StatefulWidget {
 }
 
 class _MonetizationScreenState extends State<MonetizationScreen> {
-  static const double _minimumPayoutUsd = 10.0;
+  static const double _minimumPayoutUsd = 100.0;
   static const int _payoutDayOfMonth = 27;
 
   bool _loading = true;

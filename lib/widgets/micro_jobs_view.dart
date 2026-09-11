@@ -532,54 +532,18 @@ class _MicroJobsViewState extends State<MicroJobsView> {
   }
 
   double _getRewardForPost(String postId) {
-    // Standard watch jobs payout based on user level
-    // Level 1: $0.02 - $0.06
-    // Level 2: $0.07 - $0.15
-    // Level 3: $0.16 - $0.30
-    // Level 4: $0.18 - $0.35
-    final mod = postId.hashCode.abs() % 5;
-    
-    double minRate = 0.02;
-    double step = 0.01;
-    
-    if (_userLevel == 2) {
-      minRate = 0.07;
-      step = 0.02;
-    } else if (_userLevel == 3) {
-      minRate = 0.16;
-      step = 0.035;
-    } else if (_userLevel >= 4) {
-      minRate = 0.18;
-      step = 0.042;
-    }
-    
-    return minRate + (mod * step);
+    // Task payouts are bounded strictly between $0.20 (min) and $0.50 (max)
+    final mod = postId.hashCode.abs() % 10;
+    final val = 0.20 + (mod * 0.033);
+    return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
   }
 
   double _getRewardForCampaign(Map<String, dynamic> campaign) {
-    // Review payouts scale linearly with duration within the required campaign level tier
-    // Bronze (Lvl 2, <=10 mins): $0.10 - $0.30
-    // Silver (Lvl 3, 11-30 mins): $0.30 - $0.60
-    // Gold (Lvl 4, >30 mins): $0.60 - $1.00
+    // Review payouts bounded strictly between $0.20 (min) and $0.50 (max)
     final int duration = campaign['duration_minutes'] as int? ?? 1;
-
-    int campaignLevel = 2;
-    if (duration > 10 && duration <= 30) campaignLevel = 3;
-    if (duration > 30) campaignLevel = 4;
-
-    if (campaignLevel == 3) {
-      // Silver: $0.30 to $0.60 (for 11 to 30 minutes)
-      final d = duration.clamp(11, 30);
-      return 0.30 + ((d - 11) / (30 - 11)) * (0.60 - 0.30);
-    } else if (campaignLevel >= 4) {
-      // Gold: $0.60 to $1.00 (for 31 to 60+ minutes)
-      final d = duration.clamp(31, 60);
-      return 0.60 + ((d - 31) / (60 - 31)) * (1.00 - 0.60);
-    } else {
-      // Bronze / Level 2: $0.10 to $0.30 (for 1 to 10 minutes)
-      final d = duration.clamp(1, 10);
-      return 0.10 + ((d - 1) / (10 - 1)) * (0.30 - 0.10);
-    }
+    final d = duration.clamp(1, 60);
+    final val = 0.20 + ((d - 1) / (60 - 1)) * (0.50 - 0.20);
+    return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
   }
 
   void _onAdminOverrideChanged() {

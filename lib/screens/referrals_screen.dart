@@ -314,13 +314,14 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('How it works',
+          Text('How It Works & Anti-Cheat Rules',
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w800)),
           const SizedBox(height: 8),
-          _bullet(theme, 'Share your personal invite link with creators.'),
-          _bullet(theme, 'New creators register automatically using your code.'),
-          _bullet(theme, 'Earn a continuous 10% bonus from the earnings of the people you referred!'),
+          _bullet(theme, 'Share your username / referral code with friends during sign-up.'),
+          _bullet(theme, 'You earn \$5.00 instantly for every valid friend referred!'),
+          _bullet(theme, 'Your friend receives a \$3.00 sign-up bonus when using your code.'),
+          _bullet(theme, 'Strict Network IP Rule: Devices on the same phone network IP address will have referral rewards voided to prevent cheating.'),
         ],
       ),
     );

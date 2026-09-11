@@ -109,7 +109,7 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
         if (!mounted) return;
         setState(() {
           _isInitialized = true;
-          _secondsRemaining = _controller!.value.duration.inSeconds;
+          _secondsRemaining = 5;
         });
         _controller!.play();
         _startTimer();
@@ -118,7 +118,7 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
         // Fallback mock countdown if video fails to play
         setState(() {
           _isInitialized = true;
-          _secondsRemaining = 15;
+          _secondsRemaining = 5;
         });
         _startTimer();
       });
