@@ -193,11 +193,11 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                                     final uri = Uri.parse(widget.url);
                                     await launchUrl(uri, mode: LaunchMode.externalApplication);
                                     // Credit reward
-                                    await MicroJobService.rewardUser('visit_website_${widget.url.hashCode}', 0.03);
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('🎉 \$0.03 reward credited!'), backgroundColor: Colors.green),
-                                      );
+                                     await MicroJobService.rewardUser('visit_website_${widget.url.hashCode}', 0.20);
+                                     if (mounted) {
+                                       ScaffoldMessenger.of(context).showSnackBar(
+                                         const SnackBar(content: Text('🎉 \$0.20 reward credited!'), backgroundColor: Colors.green),
+                                       );
                                       Navigator.pop(context);
                                     }
                                   } catch (e) {

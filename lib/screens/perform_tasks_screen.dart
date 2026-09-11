@@ -777,7 +777,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           const Text(
-                            '+\$0.03',
+                            '+\$0.20',
                             style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 14),
                           ),
                           const SizedBox(height: 4),

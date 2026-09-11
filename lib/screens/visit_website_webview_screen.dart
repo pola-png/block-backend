@@ -92,7 +92,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
     });
 
     final taskId = 'visit_website_${widget.url.hashCode}';
-    final success = await MicroJobService.rewardUser(taskId, 0.03);
+    final success = await MicroJobService.rewardUser(taskId, 0.20);
 
     if (!mounted) return;
     if (success) {
@@ -107,7 +107,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
               Text('Task Completed!'),
             ],
           ),
-          content: const Text('You have successfully completed this website visit. A reward of \$0.03 has been added to your balance.'),
+          content: const Text('You have successfully completed this website visit. A reward of \$0.20 has been added to your balance.'),
           actions: [
             TextButton(
               onPressed: () {
@@ -184,7 +184,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
               child: Text(
                 _completed
                     ? '🎉 Reward earned! You can now go back.'
-                    : '⏳ Keep browsing for $_secondsRemaining seconds to earn \$0.03',
+                    : '⏳ Keep browsing for $_secondsRemaining seconds to earn \$0.20',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ),
