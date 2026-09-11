@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/ad_helper.dart';
+import '../services/ad_gate_service.dart';
 import '../services/micro_job_service.dart';
 import 'visit_website_webview_screen.dart';
 
@@ -27,10 +28,6 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
   bool _isBanner1Loaded = false;
   bool _isBanner2Loaded = false;
   bool _isBanner3Loaded = false;
-
-  // Interstitial Ad
-  InterstitialAd? _interstitialAd;
-  bool _isInterstitialLoaded = false;
 
   @override
   void initState() {
@@ -82,39 +79,8 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
       ),
     )..load();
 
-    // Load Interstitial Ad
-    InterstitialAd.load(
-      adUnitId: AdHelper.interstitial,
-      request: const AdRequest(),
-      adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (ad) {
-          _interstitialAd = ad;
-          _isInterstitialLoaded = true;
-          debugPrint('Gateway Interstitial loaded successfully.');
-          // Auto play interstitial as soon as it's ready to maximize ad exposure
-          _showInterstitialAd();
-        },
-        onAdFailedToLoad: (error) {
-          debugPrint('Gateway Interstitial failed to load: $error');
-        },
-      ),
-    );
-  }
-
-  void _showInterstitialAd() {
-    if (_isInterstitialLoaded && _interstitialAd != null) {
-      _interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
-        onAdDismissedFullScreenContent: (ad) {
-          ad.dispose();
-          _interstitialAd = null;
-        },
-        onAdFailedToShowFullScreenContent: (ad, error) {
-          ad.dispose();
-          _interstitialAd = null;
-        },
-      );
-      _interstitialAd!.show();
-    }
+    // Show Interstitial Ad (respecting 5-minute cooldown)
+    XapZapAdGateService.instance.showInterstitialAd(placement: 'website_gateway_screen');
   }
 
   void _startCountdown() {
@@ -138,7 +104,6 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
     _bannerAd1?.dispose();
     _bannerAd2?.dispose();
     _bannerAd3?.dispose();
-    _interstitialAd?.dispose();
     super.dispose();
   }
 

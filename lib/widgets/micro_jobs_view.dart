@@ -89,7 +89,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
       }
     });
 
-    _interstitialTimer = Timer.periodic(const Duration(minutes: 2), (timer) {
+    _interstitialTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
       _showInterstitialAd();
     });
 
@@ -342,20 +342,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
   }
 
   void _showInterstitialAd() {
-    InterstitialAd.load(
-      adUnitId: AdHelper.interstitial,
-      request: const AdRequest(),
-      adLoadCallback: InterstitialAdLoadCallback(
-        onAdLoaded: (ad) {
-          ad.fullScreenContentCallback = FullScreenContentCallback(
-            onAdDismissedFullScreenContent: (ad) => ad.dispose(),
-            onAdFailedToShowFullScreenContent: (ad, error) => ad.dispose(),
-          );
-          ad.show();
-        },
-        onAdFailedToLoad: (error) => debugPrint('Failed to load interstitial: $error'),
-      ),
-    );
+    XapZapAdGateService.instance.showInterstitialAd(placement: 'jobs_screen_timer');
   }
 
   Future<void> _loadStateAndJobs() async {
@@ -787,7 +774,9 @@ class _MicroJobsViewState extends State<MicroJobsView> {
               side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
             ),
             child: InkWell(
-              onTap: () {
+              onTap: () async {
+                await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_tasks_button');
+                if (!mounted) return;
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (context) => const PerformTasksScreen()),

@@ -10,6 +10,7 @@ import '../services/micro_job_service.dart';
 import '../services/app_review_service.dart';
 import '../services/backend_service.dart';
 import '../services/ad_helper.dart';
+import '../services/ad_gate_service.dart';
 import 'withdrawal_settings_screen.dart';
 import 'level_upgrades_screen.dart';
 import 'submit_video_campaign_screen.dart';
@@ -509,6 +510,8 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                           );
                           return;
                         }
+                        await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_video');
+                        if (!mounted) return;
                         final syntheticCampaign = <String, dynamic>{
                           'id': video.id,
                           'video_url': video.videoUrl ?? video.preferredVideoUrl ?? '',
@@ -653,6 +656,8 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                         );
                         return;
                       }
+                      await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_review');
+                      if (!mounted) return;
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -819,6 +824,8 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                           );
                           return;
                         }
+                        await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_website');
+                        if (!mounted) return;
                         Navigator.push(
                           context,
                           MaterialPageRoute(
