@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Bundle
-import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -16,7 +16,7 @@ class MainActivity : FlutterActivity() {
     private var nativeFactory: NativeAdFactorySimple? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         super.onCreate(savedInstanceState)
     }
 

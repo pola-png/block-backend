@@ -14,7 +14,7 @@
 # Firebase
 -keep class com.google.firebase.** { *; }
 
-# Keep native methods
--keepclasseswithmembernames class * {
-    native <methods>;
-}
+# Suppress warnings for optional Play Core deferred components in Flutter
+-dontwarn com.google.android.play.core.**
+-dontwarn io.flutter.embedding.engine.deferredcomponents.**
+
