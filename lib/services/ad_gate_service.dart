@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../services/ad_helper.dart';
 import '../services/ad_revenue_service.dart';
+import 'rewarded_ad_preload_service.dart';
 
 class XapZapAdGateService {
   static final XapZapAdGateService instance = XapZapAdGateService._();

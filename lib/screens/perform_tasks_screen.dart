@@ -622,7 +622,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                           const Icon(Icons.arrow_forward_ios, size: 12),
                       ],
                     ),
-                    onTap: () {
+                    onTap: () async {
                       if (!isUnlocked) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
