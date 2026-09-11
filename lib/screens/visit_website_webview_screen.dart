@@ -32,14 +32,22 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
     _initWebView();
     _loadBannerAd();
     _startTimer();
-    _openInExternalBrowser();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _openInExternalBrowser();
+    });
   }
 
   void _openInExternalBrowser() async {
     try {
       final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
       final uri = Uri.parse(cleanUrl);
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      bool launched = false;
+      try {
+        launched = await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+      } catch (_) {}
+      if (!launched) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
     } catch (e) {
       debugPrint('Could not launch URL in external browser: $e');
     }
@@ -163,14 +171,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
           IconButton(
             icon: const Icon(Icons.open_in_browser),
             tooltip: 'Open in Chrome/Browser',
-            onPressed: () async {
-              try {
-                final uri = Uri.parse(widget.url);
-                await launchUrl(uri, mode: LaunchMode.externalApplication);
-              } catch (e) {
-                debugPrint('Could not launch URL: $e');
-              }
-            },
+            onPressed: _openInExternalBrowser,
           ),
           if (!_completed)
             Padding(
