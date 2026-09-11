@@ -114,9 +114,27 @@ class PendingUploadsScreen extends StatelessWidget {
             color: statusColor,
           ),
           const SizedBox(height: 8),
-          Text(
-            upload.failed && upload.error != null ? upload.error! : upload.status,
-            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  upload.failed && upload.error != null ? upload.error! : upload.status,
+                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ),
+              if (!upload.completed)
+                TextButton(
+                  onPressed: () {
+                    PendingUploadService.cancel(upload.id);
+                  },
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: const Text('Cancel'),
+                ),
+            ],
           ),
         ],
       ),

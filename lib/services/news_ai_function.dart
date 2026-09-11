@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:appwrite/appwrite.dart';
+import 'package:xapzap/models/database_models.dart';
 
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 
 /// Helper to call the AI News Appwrite Function from the client.
 class NewsAiFunction {
@@ -23,7 +23,7 @@ class NewsAiFunction {
     List<String>? trendSource,
     int? trendWindowMinutes,
   }) async {
-    final client = AppwriteService.account.client;
+    final client = BackendService.client;
     final functions = Functions(client);
 
     final payload = <String, dynamic>{

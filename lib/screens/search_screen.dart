@@ -1,10 +1,10 @@
 import 'dart:async';
 
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/post_card.dart';
 import 'hashtag_feed_screen.dart';
@@ -60,7 +60,7 @@ class _SearchScreenState extends State<SearchScreen> {
       if (_activeTab == 'all' || _activeTab == 'posts') {
         try {
           final postsResult =
-              await AppwriteService.searchPostsByTextAcrossPages(
+              await BackendService.searchPostsByTextAcrossPages(
             query,
             limit: 50,
           );
@@ -94,7 +94,7 @@ class _SearchScreenState extends State<SearchScreen> {
         try {
           final handle = query.startsWith('@') ? query.substring(1) : query;
           final profiles =
-              await AppwriteService.searchProfiles(handle, limit: 10);
+              await BackendService.searchProfiles(handle, limit: 10);
           final profileRows = <aw.Row>[
             ...profiles.rows,
           ];
@@ -123,7 +123,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
       if (_activeTab == 'all' || _activeTab == 'hashtags') {
         try {
-          final postsResult = await AppwriteService.fetchPosts(limit: 80);
+          final postsResult = await BackendService.fetchPosts(limit: 80);
           final Map<String, int> counts = {};
           final regex = RegExp(r'#([A-Za-z0-9_]+)');
           for (final row in postsResult.rows) {

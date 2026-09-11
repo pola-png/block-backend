@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 
 class PostViewRetryQueue {
   static const String _prefsKey = 'pending_post_view_increments_v1';
@@ -22,7 +22,7 @@ class PostViewRetryQueue {
     if (postId.trim().isEmpty || delta == 0) return;
     await initialize();
     try {
-      await AppwriteService.incrementPostViews(postId, delta);
+      await BackendService.incrementPostViews(postId, delta);
       unawaited(flushPending());
       return;
     } catch (_) {
@@ -39,7 +39,7 @@ class PostViewRetryQueue {
       final entries = List<MapEntry<String, int>>.from(_pending.entries);
       for (final entry in entries) {
         try {
-          await AppwriteService.incrementPostViews(entry.key, entry.value);
+          await BackendService.incrementPostViews(entry.key, entry.value);
           _pending.remove(entry.key);
           await _save();
         } catch (_) {

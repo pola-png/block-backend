@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:appwrite/models.dart' as aw;
-import '../services/appwrite_service.dart';
+import 'package:xapzap/models/database_models.dart' as aw;
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../services/hashtag_feed_cache.dart';
 import '../models/post.dart';
@@ -49,7 +49,7 @@ class _HashtagFeedScreenState extends State<HashtagFeedScreen> {
     if (_isLoading) return;
     setState(() => _isLoading = true);
     try {
-      final aw.RowList list = await AppwriteService.searchPostsByHashtag(
+      final aw.RowList list = await BackendService.searchPostsByHashtag(
           widget.tag,
           limit: 20,
           cursorId: _cursor);

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 
 class EditPostScreen extends StatefulWidget {
   final Post post;
@@ -45,8 +45,8 @@ class _EditPostScreenState extends State<EditPostScreen> {
           postTypeLower.contains('blog')) {
         update['title'] = _titleController.text.trim();
       }
-      await AppwriteService.updateRow(
-        AppwriteService.postsCollectionId,
+      await BackendService.updateRow(
+        BackendService.postsCollectionId,
         widget.post.id,
         update,
       );

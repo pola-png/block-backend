@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 
 import '../services/boost_service.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../models/post.dart';
 
 class BoostCenterScreen extends StatefulWidget {
@@ -32,7 +32,7 @@ class _BoostCenterScreenState extends State<BoostCenterScreen>
   Future<void> _loadBoosts() async {
     setState(() => _loading = true);
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         if (!mounted) return;
         setState(() {
@@ -73,8 +73,8 @@ class _BoostCenterScreenState extends State<BoostCenterScreen>
   void _subscribeRealtime() {
     try {
       final channel =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postBoostsCollectionId}.documents';
-      final sub = AppwriteService.realtime.subscribe([channel]);
+          'databases.${BackendService.databaseId}.collections.${BackendService.postBoostsCollectionId}.documents';
+      final sub = BackendService.realtime.subscribe([channel]);
       sub.stream.listen((event) async {
         if (!mounted) return;
         if (event.events.isEmpty) return;
@@ -154,8 +154,8 @@ class _BoostCenterScreenState extends State<BoostCenterScreen>
             : 0.0;
 
         return FutureBuilder<aw.Row>(
-          future: AppwriteService.getRow(
-            AppwriteService.postsCollectionId,
+          future: BackendService.getRow(
+            BackendService.postsCollectionId,
             data['postId'] as String,
           ),
           builder: (context, snapshot) {

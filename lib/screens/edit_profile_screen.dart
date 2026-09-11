@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../services/avatar_cache.dart';
 
@@ -87,12 +87,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _loadProfile() async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         setState(() => _loading = false);
         return;
       }
-      final prof = await AppwriteService.getProfileByUserId(user.$id);
+      final prof = await BackendService.getProfileByUserId(user.$id);
       final data = prof?.data ?? <String, dynamic>{};
 
       _usernameController.text = (data['username'] as String?) ?? '';
@@ -733,7 +733,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) return;
 
       final rawUsername = _usernameController.text.trim();
@@ -745,7 +745,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       }
       // Ensure username uniqueness (except for current user).
       final existingProfile =
-          await AppwriteService.getProfileByUsername(rawUsername);
+          await BackendService.getProfileByUsername(rawUsername);
       if (existingProfile != null && existingProfile.$id != user.$id) {
         messenger.showSnackBar(
           const SnackBar(content: Text('Username already taken')),
@@ -753,7 +753,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         return;
       }
 
-      // Normalize and validate website (Appwrite `url` type).
+      // Normalize and validate website (database URL format).
       String website = _websiteController.text.trim();
       if (website.isNotEmpty &&
           !website.startsWith('http://') &&
@@ -795,7 +795,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             await StorageService.uploadProfileCover(_selectedCover!, user.$id);
       }
 
-      await AppwriteService.updateUserProfile(user.$id, {
+      await BackendService.updateUserProfile(user.$id, {
         'username': rawUsername,
         'displayName': _displayNameController.text.trim(),
         'bio': _bioController.text.trim(),

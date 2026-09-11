@@ -1,8 +1,8 @@
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import 'reel_detail_screen.dart';
 import 'video_detail_screen.dart';
@@ -38,12 +38,12 @@ class _SeriesPageScreenState extends State<SeriesPageScreen> {
     setState(() => _isLoading = true);
     try {
       final results = await Future.wait<dynamic>([
-        AppwriteService.fetchSeriesEpisodeRows(
+        BackendService.fetchSeriesEpisodeRows(
           userId: widget.ownerUserId,
           seriesTitle: widget.seriesTitle,
           contentType: widget.contentType,
         ),
-        AppwriteService.fetchSeriesHeaderData(
+        BackendService.fetchSeriesHeaderData(
           userId: widget.ownerUserId,
           seriesTitle: widget.seriesTitle,
           contentType: widget.contentType,

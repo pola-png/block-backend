@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:appwrite/appwrite.dart' show AppwriteException;
+import 'package:xapzap/models/database_models.dart' show DatabaseException;
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -11,7 +11,7 @@ import 'package:video_thumbnail/video_thumbnail.dart';
 
 import '../models/upload_type.dart';
 import '../utils/news_seo.dart';
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 import 'storage_service.dart';
 
 class PendingUpload {
@@ -31,6 +31,7 @@ class PendingUpload {
   bool completed = false;
   bool failed = false;
   bool isDraft = false;
+  bool isCancelled = false;
   String? error;
   int attempt = 0;
 
@@ -45,6 +46,7 @@ class PendingUpload {
       'completed': completed,
       'failed': failed,
       'isDraft': isDraft,
+      'isCancelled': isCancelled,
       'error': error,
       'attempt': attempt,
     };
@@ -69,6 +71,7 @@ class PendingUpload {
     upload.completed = json['completed'] == true;
     upload.failed = json['failed'] == true;
     upload.isDraft = json['isDraft'] == true;
+    upload.isCancelled = json['isCancelled'] == true;
     upload.error = json['error'] as String?;
     upload.attempt = (json['attempt'] as num?)?.toInt() ?? 0;
     return upload;
@@ -212,12 +215,37 @@ class PendingUploadService {
     final upload = uploads.value[uploadIndex];
     upload.failed = false;
     upload.isDraft = false;
+    upload.isCancelled = false;
     upload.error = null;
     upload.progress = 0.0;
     upload.completed = false;
     upload.status = 'Retrying...';
     _notify();
     await _processPostUpload(upload, request);
+  }
+
+  static Future<void> cancel(String uploadId) async {
+    final uploadIndex = uploads.value.indexWhere((u) => u.id == uploadId);
+    if (uploadIndex == -1) return;
+    final upload = uploads.value[uploadIndex];
+    upload.isCancelled = true;
+
+    final updated = List<PendingUpload>.from(uploads.value);
+    updated.removeAt(uploadIndex);
+    uploads.value = updated;
+    
+    _requests.remove(uploadId);
+    await _persistQueue();
+
+    // Clean up temporary files
+    for (final path in upload.request.cleanupPaths) {
+      try {
+        final f = File(path);
+        if (await f.exists()) {
+          await f.delete();
+        }
+      } catch (_) {}
+    }
   }
 
   static Future<void> clearCompletedUploads() async {
@@ -330,7 +358,13 @@ class PendingUploadService {
       if (!upload.completed && !upload.failed) {
         await _processPostUpload(upload, stagedRequest);
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Error in _stageUploadThenProcess: $e');
+      upload.failed = true;
+      upload.error = e.toString();
+      upload.status = 'Staging failed';
+      _notify();
+    }
   }
 
   static Future<void> _persistQueue() async {
@@ -386,7 +420,9 @@ class PendingUploadService {
             : 'Retrying (${upload.attempt}/$maxAttempts)';
         upload.progress = 0.05;
         _notify();
-        final user = await AppwriteService.getCurrentUser();
+        if (upload.isCancelled) return;
+        
+        final user = await BackendService.getCurrentUser();
         if (user == null) {
           throw Exception('Login required');
         }
@@ -395,7 +431,7 @@ class PendingUploadService {
         String? displayName;
         String? username;
         try {
-          final profile = await AppwriteService.getProfileByUserId(user.$id);
+          final profile = await BackendService.getProfileByUserId(user.$id);
           avatarUrl = profile?.data['avatarUrl'] as String?;
           displayName = (profile?.data['displayName'] as String?)?.trim();
           username = (profile?.data['username'] as String?)?.trim();
@@ -410,6 +446,8 @@ class PendingUploadService {
             upload.status = 'Uploading video';
             upload.progress = 0.2;
             _notify();
+            if (upload.isCancelled) return;
+            
             final file = File(request.videoPath!);
             if (!file.existsSync()) {
               throw Exception('Video file missing at ${file.path}');
@@ -430,6 +468,8 @@ class PendingUploadService {
             upload.status = 'Uploading thumbnail';
             upload.progress = 0.35;
             _notify();
+            if (upload.isCancelled) return;
+            
             final thumbFile = File(request.thumbnailPath!);
             final ext = p.extension(thumbFile.path);
             final key =
@@ -447,28 +487,31 @@ class PendingUploadService {
                 imageFormat: ImageFormat.PNG,
                 maxHeight: 480,
                 quality: 75,
-              );
-              if (thumbPath != null) {
-                final thumbFile = File(thumbPath);
-                if (!thumbFile.existsSync()) {
-                  throw Exception('Generated thumbnail file missing');
-                }
-                final ext = p.extension(thumbFile.path);
-                final key =
-                    'videos/${user.$id}/thumb_${upload.id}${ext.isNotEmpty ? ext : '.png'}';
-                final storedThumb =
-                    await StorageService.uploadFileAtPath(thumbFile, key);
-                thumbnailUrl = storedThumb;
+              ).timeout(const Duration(seconds: 20));
+              if (thumbPath == null) {
+                throw Exception('Thumbnail generation returned null');
               }
-            } catch (_) {
-              // If thumbnail generation fails, continue without blocking upload.
-              thumbnailUrl = null;
+              final thumbFile = File(thumbPath);
+              if (!thumbFile.existsSync()) {
+                throw Exception('Generated thumbnail file missing');
+              }
+              final ext = p.extension(thumbFile.path);
+              final key =
+                  'videos/${user.$id}/thumb_${upload.id}${ext.isNotEmpty ? ext : '.png'}';
+              final storedThumb =
+                  await StorageService.uploadFileAtPath(thumbFile, key);
+              thumbnailUrl = storedThumb;
+            } catch (e) {
+              debugPrint('Thumbnail generation failed: $e');
+              rethrow;
             }
           }
         } else if (request.mediaPaths.isNotEmpty) {
           upload.status = 'Uploading media';
           upload.progress = 0.2;
           _notify();
+          if (upload.isCancelled) return;
+          
           for (var index = 0; index < request.mediaPaths.length; index++) {
             final path = request.mediaPaths[index];
             final file = File(path);
@@ -483,6 +526,7 @@ class PendingUploadService {
         upload.status = 'Publishing post';
         upload.progress = 0.8;
         _notify();
+        if (upload.isCancelled) return;
 
         final hasMedia = uploadedMedia.isNotEmpty;
         final String postType = switch (request.type) {
@@ -593,7 +637,7 @@ class PendingUploadService {
             'seoCategory': seoCategory,
         };
 
-        final createdPost = await AppwriteService.createPost(data);
+        final createdPost = await BackendService.createPost(data);
 
         upload.status = 'Completed';
         upload.progress = 1.0;
@@ -612,6 +656,7 @@ class PendingUploadService {
         }
         return;
       } catch (e) {
+        if (upload.isCancelled) return;
         upload.failed = i + 1 >= maxAttempts;
         upload.error = _formatUploadError(e);
         upload.isDraft = upload.failed;
@@ -624,7 +669,7 @@ class PendingUploadService {
   }
 
   static String _formatUploadError(Object error) {
-    if (error is AppwriteException) {
+    if (error is DatabaseException) {
       if (!kDebugMode) {
         return 'Upload failed. Please try again.';
       }

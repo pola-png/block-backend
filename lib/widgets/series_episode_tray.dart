@@ -1,8 +1,8 @@
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../screens/reel_detail_screen.dart';
 import '../screens/series_page_screen.dart';
@@ -40,7 +40,7 @@ class _SeriesEpisodeTrayState extends State<SeriesEpisodeTray> {
 
   Future<void> _load() async {
     try {
-      final rows = await AppwriteService.fetchSeriesEpisodeRows(
+      final rows = await BackendService.fetchSeriesEpisodeRows(
         userId: widget.ownerUserId,
         seriesTitle: widget.seriesTitle,
         contentType: widget.contentType,
@@ -84,9 +84,7 @@ class _SeriesEpisodeTrayState extends State<SeriesEpisodeTray> {
     return _TrayEpisode(
       post: Post(
         id: row.$id,
-        username: (data['displayName'] as String?)?.trim().isNotEmpty == true
-            ? (data['displayName'] as String).trim()
-            : ((data['username'] as String?)?.trim() ?? ''),
+        username: (data['username'] as String?)?.trim() ?? '',
         userAvatar: (data['userAvatar'] as String?) ?? '',
         content: ((data['episodeDescription'] as String?) ?? '').trim(),
         imageUrl: thumb,

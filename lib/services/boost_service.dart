@@ -1,7 +1,7 @@
-import 'package:appwrite/appwrite.dart' show Query;
-import 'package:appwrite/models.dart' as models;
+import 'package:xapzap/models/database_models.dart' show Query;
+import 'package:xapzap/models/database_models.dart' as models;
 
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 
 class BoostService {
   static const double baseReachPerDollarPerDay = 5000.0;
@@ -16,7 +16,7 @@ class BoostService {
     required double amountUsd,
     required int days,
   }) async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (user == null) {
       throw StateError('User must be signed in to boost posts.');
     }
@@ -32,8 +32,8 @@ class BoostService {
       'paymentProvider': 'flutterwave',
       'createdAt': DateTime.now().toIso8601String(),
     };
-    final row = await AppwriteService.createDocument(
-      AppwriteService.postBoostsCollectionId,
+    final row = await BackendService.createDocument(
+      BackendService.postBoostsCollectionId,
       data,
     );
     return row;
@@ -51,20 +51,20 @@ class BoostService {
     if (paymentRef != null && paymentRef.isNotEmpty) {
       data['paymentRef'] = paymentRef;
     }
-    await AppwriteService.updateRow(
-      AppwriteService.postBoostsCollectionId,
+    await BackendService.updateRow(
+      BackendService.postBoostsCollectionId,
       boostId,
       data,
     );
-    await AppwriteService.updateRow(AppwriteService.postsCollectionId, postId, {
+    await BackendService.updateRow(BackendService.postsCollectionId, postId, {
       'isBoosted': true,
       'activeBoostId': boostId,
     });
   }
 
   static Future<void> markBoostFailed(String boostId) async {
-    await AppwriteService.updateRow(
-      AppwriteService.postBoostsCollectionId,
+    await BackendService.updateRow(
+      BackendService.postBoostsCollectionId,
       boostId,
       {'status': 'failed'},
     );
@@ -81,8 +81,8 @@ class BoostService {
       Query.limit(limit),
       Query.orderDesc('createdAt'),
     ];
-    return AppwriteService.getDocuments(
-      AppwriteService.postBoostsCollectionId,
+    return BackendService.getDocuments(
+      BackendService.postBoostsCollectionId,
       queries: queries,
     );
   }

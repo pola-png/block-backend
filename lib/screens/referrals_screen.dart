@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 
 class ReferralsScreen extends StatefulWidget {
   const ReferralsScreen({super.key});
@@ -40,7 +40,7 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
         _loading = true;
         _error = null;
       });
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         if (!mounted) return;
         Navigator.of(context)
@@ -48,14 +48,14 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
         return;
       }
 
-      final profile = await AppwriteService.getProfileByUserId(user.$id);
+      final profile = await BackendService.getProfileByUserId(user.$id);
       final code =
           (profile?.data['username'] as String?)?.trim().isNotEmpty == true
               ? (profile?.data['username'] as String).trim()
               : user.$id;
-      final referrals = await AppwriteService.fetchReferralFollows(user.$id);
+      final referrals = await BackendService.fetchReferralFollows(user.$id);
       final earningsSummary =
-          await AppwriteService.fetchCreatorEarningsSummary(creatorId: user.$id);
+          await BackendService.fetchCreatorEarningsSummary(creatorId: user.$id);
       final referralEarnings =
           (earningsSummary['referralEarningsUsd'] as num?)?.toDouble() ?? 0.0;
 
@@ -225,21 +225,24 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
   }
 
   Widget _buildStatsCard(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            theme.colorScheme.primary,
-            theme.colorScheme.primary.withRed(100),
-          ],
+          colors: isDark
+              ? [const Color(0xFF1E293B), const Color(0xFF0F172A)]
+              : [const Color(0xFFF1F5F9), Colors.white],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5),
+        ),
         boxShadow: [
           BoxShadow(
-            color: theme.colorScheme.primary.withOpacity(0.2),
+            color: Colors.black.withOpacity(isDark ? 0.3 : 0.03),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -253,7 +256,7 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
               Text(
                 'Total Referrals',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.85),
+                  color: theme.colorScheme.onSurfaceVariant,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
@@ -261,8 +264,8 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
               const SizedBox(height: 6),
               Text(
                 '${_referrals.length}',
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
                 ),
@@ -272,23 +275,23 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
           Container(
             height: 40,
             width: 1,
-            color: Colors.white24,
+            color: isDark ? Colors.white24 : theme.dividerColor.withOpacity(0.5),
           ),
           Column(
             children: [
               Text(
                 'Referral Earnings',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.85),
+                  color: theme.colorScheme.onSurfaceVariant,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 6),
               Text(
-                '\$${_referralEarningsUsd.toStringAsFixed(2)}',
-                style: const TextStyle(
-                  color: Colors.white,
+                '\$${_referralEarningsUsd.toStringAsFixed(3)}', // Match the 3-decimal sub-cent standard
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
                 ),

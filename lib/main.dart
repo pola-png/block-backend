@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show Supabase;
+import 'config/environment.dart';
 import 'dart:async';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -24,10 +26,9 @@ import 'screens/main_screen.dart';
 import 'screens/terms_of_service_screen.dart';
 import 'screens/auth/reset_password_screen.dart';
 import 'services/auth_wrapper.dart';
-import 'services/appwrite_service.dart';
+import 'services/backend_service.dart';
 import 'services/firebase_service.dart';
 import 'services/play_store_update_service.dart';
-import 'services/storage_service.dart';
 import 'services/chat_message_cache.dart';
 import 'services/chat_preview_cache.dart';
 import 'services/chat_prefetch_service.dart';
@@ -41,6 +42,7 @@ import 'services/network_status_service.dart';
 import 'services/realtime_gateway.dart';
 import 'services/device_mode_service.dart';
 import 'services/navigation_service.dart';
+import 'services/ad_gate_service.dart';
 import 'providers/theme_provider.dart';
 import 'theme/app_theme.dart';
 
@@ -90,8 +92,28 @@ Future<void> _bootstrapCriticalServices() async {
     await dotenv.load(fileName: ".env");
   } catch (_) {}
   try {
-    await AppwriteService.initialize();
+    await Supabase.initialize(
+      url: Environment.supabaseUrl,
+      anonKey: Environment.supabaseAnonKey,
+    );
   } catch (_) {}
+  try {
+    await BackendService.initialize();
+  } catch (_) {}
+  if (!kIsWeb && !DeviceModeService.isTv) {
+    try {
+      await MobileAds.instance.initialize();
+      if (kDebugMode) {
+        await MobileAds.instance.updateRequestConfiguration(
+          RequestConfiguration(
+            testDeviceIds: ['93B5FC3B503A1A45170BFE3370D4426F'],
+          ),
+        );
+      }
+      // Wait for the App Open Ad to be preloaded (up to 2.5 seconds timeout inside init)
+      await XapZapAdGateService.instance.init();
+    } catch (_) {}
+  }
 }
 
 Future<void> _bootstrapBackgroundServices() async {
@@ -111,9 +133,6 @@ Future<void> _bootstrapBackgroundServices() async {
     await PostViewRetryQueue.initialize();
   } catch (_) {}
   try {
-    await StorageService.initialize();
-  } catch (_) {}
-  try {
     await AvatarCache.initialize();
   } catch (_) {}
   try {
@@ -123,15 +142,10 @@ Future<void> _bootstrapBackgroundServices() async {
     RealtimeGateway.initialize();
   } catch (_) {}
   if (!kIsWeb && !DeviceModeService.isTv) {
-    try {
-      await MobileAds.instance.initialize();
-    } catch (_) {}
-  }
-  if (!kIsWeb && !DeviceModeService.isTv) {
     unawaited(NativeAdPreloadService.warmupFast(maxSlotIndex: 2));
   }
   unawaited(PostViewRetryQueue.flushPending());
-  unawaited(AppwriteService.processNotificationQueue(limit: 5));
+  unawaited(BackendService.processNotificationQueue(limit: 5));
   // Start preloading the home feeds in the background so that
   // the HomeScreen can render instantly when opened.
   // On web we skip this to reduce first-load work and rely on
@@ -159,6 +173,7 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForAppUpdate();
+      XapZapAdGateService.instance.showAppOpenAdIfAvailable();
     });
   }
 
@@ -172,6 +187,7 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(PostViewRetryQueue.flushPending());
+      XapZapAdGateService.instance.showAppOpenAdIfAvailable();
     }
   }
 

@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../models/post.dart';
 import '../services/boost_service.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutterwave_standard/flutterwave.dart';
+import '../services/currency_service.dart';
 
 class BoostPostScreen extends StatefulWidget {
   final Post post;
@@ -110,13 +111,12 @@ class _BoostPostScreenState extends State<BoostPostScreen> {
       );
 
       final totalAmount = _amount * _days;
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         throw StateError('User must be signed in to pay for ads.');
       }
 
       final publicKey = dotenv.env['FLW_PUBLIC_KEY'] ?? '';
-      final currency = dotenv.env['FLW_CURRENCY'] ?? 'USD';
       final redirectUrl =
           dotenv.env['FLW_REDIRECT_URL'] ?? 'https://example.com';
       final isTestMode = (dotenv.env['FLW_TEST_MODE'] ?? 'true') == 'true';
@@ -126,23 +126,31 @@ class _BoostPostScreenState extends State<BoostPostScreen> {
       }
 
       final customer = Customer(
-        name: user.name,
-        phoneNumber: '',
-        email: user.email,
+        name: user.name.trim().isNotEmpty ? user.name : 'XapZap User',
+        phoneNumber: '08000000000',
+        email: user.email.trim().isNotEmpty ? user.email : 'user@xapzap.com',
       );
 
       final txRef =
           'xapzap_ads_${draft.$id}_${DateTime.now().millisecondsSinceEpoch}';
 
+      // Fetch network-detected local currency and exchange rates dynamically
+      final localCurrencyInfo = await CurrencyService.getLocalCurrencyInfo(totalAmount);
+      final finalCurrency = localCurrencyInfo.currencyCode;
+      final finalAmount = localCurrencyInfo.convertedAmount;
+
       final flutterwave = Flutterwave(
         publicKey: publicKey,
-        currency: currency,
-        amount: totalAmount.toStringAsFixed(2),
+        currency: finalCurrency,
+        amount: finalAmount.toStringAsFixed(2),
         customer: customer,
         txRef: txRef,
         redirectUrl: redirectUrl,
         paymentOptions: "card,account,ussd,barter",
-        customization: Customization(title: "Promote post"),
+        customization: Customization(
+          title: "Promote post",
+          description: "Fund promotion for ${finalAmount.toStringAsFixed(2)} $finalCurrency",
+        ),
         isTestMode: isTestMode,
       );
 

@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:appwrite/appwrite.dart' show Query;
-import 'package:appwrite/models.dart' as aw;
+import 'package:xapzap/models/database_models.dart' show Query;
+import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/network_status_service.dart';
 
 class AdminDesktopBootstrap extends StatelessWidget {
@@ -58,11 +58,11 @@ class _AdminDesktopAppState extends State<AdminDesktopApp> {
   }
 
   Future<_AdminSessionState> _loadSession() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (user == null) {
       return const _AdminSessionState.signedOut();
     }
-    final isAdmin = await AppwriteService.isCurrentUserAdmin();
+    final isAdmin = await BackendService.isCurrentUserAdmin();
     return _AdminSessionState(user: user, isAdmin: isAdmin);
   }
 
@@ -73,7 +73,7 @@ class _AdminDesktopAppState extends State<AdminDesktopApp> {
   }
 
   Future<void> _handleSignOut() async {
-    await AppwriteService.signOut();
+    await BackendService.signOut();
     if (!mounted) return;
     await _refreshSession();
   }
@@ -148,10 +148,10 @@ class _AdminDesktopSignInScreenState extends State<AdminDesktopSignInScreen> {
     });
 
     try {
-      await AppwriteService.signIn(email, password);
-      final isAdmin = await AppwriteService.isCurrentUserAdmin();
+      await BackendService.signIn(email, password);
+      final isAdmin = await BackendService.isCurrentUserAdmin();
       if (!isAdmin) {
-        await AppwriteService.signOut();
+        await BackendService.signOut();
         if (!mounted) return;
         setState(() {
           _submitting = false;
@@ -447,28 +447,28 @@ class _AdminOverviewPanelState extends State<AdminOverviewPanel> {
 
   Future<_AdminOverviewData> _load() async {
     Future<int> countOf(String tableId) async {
-      final res = await AppwriteService.getDocuments(
+      final res = await BackendService.getDocuments(
         tableId,
         queries: <String>[Query.limit(1)],
       );
       return res.total;
     }
 
-    final profileRes = await AppwriteService.listProfiles(limit: 8);
-    final notificationsRes = await AppwriteService.getDocuments(
-      AppwriteService.notificationsCollectionId,
+    final profileRes = await BackendService.listProfiles(limit: 8);
+    final notificationsRes = await BackendService.getDocuments(
+      BackendService.notificationsCollectionId,
       queries: <String>[Query.limit(8)],
     );
 
     final counts = await Future.wait<int>(<Future<int>>[
-      countOf(AppwriteService.profilesCollectionId),
-      countOf(AppwriteService.postsCollectionId),
-      countOf(AppwriteService.commentsCollectionId),
-      countOf(AppwriteService.reportsCollectionId),
-      countOf(AppwriteService.notificationsCollectionId),
-      countOf(AppwriteService.messagesCollectionId),
-      countOf(AppwriteService.chatsCollectionId),
-      countOf(AppwriteService.adImpressionsCollectionId),
+      countOf(BackendService.profilesCollectionId),
+      countOf(BackendService.postsCollectionId),
+      countOf(BackendService.commentsCollectionId),
+      countOf(BackendService.reportsCollectionId),
+      countOf(BackendService.notificationsCollectionId),
+      countOf(BackendService.messagesCollectionId),
+      countOf(BackendService.chatsCollectionId),
+      countOf(BackendService.adImpressionsCollectionId),
     ]);
 
     return _AdminOverviewData(
@@ -630,12 +630,12 @@ class _AdminUsersPanelState extends State<AdminUsersPanel> {
   }
 
   Future<List<aw.Row>> _load() async {
-    final res = await AppwriteService.listProfiles(limit: 120);
+    final res = await BackendService.listProfiles(limit: 120);
     return res.rows;
   }
 
   Future<void> _toggleAdmin(aw.Row row, bool value) async {
-    await AppwriteService.setAdminFlag(row.$id, value);
+    await BackendService.setAdminFlag(row.$id, value);
     if (!mounted) return;
     setState(() {
       row.data['isAdmin'] = value;
@@ -739,23 +739,23 @@ class AdminModerationPanel extends StatelessWidget {
   const AdminModerationPanel({super.key, required this.refreshTick});
 
   Future<List<aw.Row>> _loadPosts() async {
-    final res = await AppwriteService.getDocuments(
-      AppwriteService.postsCollectionId,
+    final res = await BackendService.getDocuments(
+      BackendService.postsCollectionId,
       queries: <String>[Query.limit(24)],
     );
     return res.rows;
   }
 
   Future<List<aw.Row>> _loadComments() async {
-    final res = await AppwriteService.getDocuments(
-      AppwriteService.commentsCollectionId,
+    final res = await BackendService.getDocuments(
+      BackendService.commentsCollectionId,
       queries: <String>[Query.limit(24)],
     );
     return res.rows;
   }
 
   Future<void> _deletePost(BuildContext context, aw.Row row) async {
-    await AppwriteService.deletePost(row.$id);
+    await BackendService.deletePost(row.$id);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Post deleted.')),
@@ -763,7 +763,7 @@ class AdminModerationPanel extends StatelessWidget {
   }
 
   Future<void> _deleteComment(BuildContext context, aw.Row row) async {
-    await AppwriteService.deleteComment(row.$id);
+    await BackendService.deleteComment(row.$id);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Comment deleted.')),
@@ -782,7 +782,7 @@ class AdminModerationPanel extends StatelessWidget {
       initialValue: (row.data['moderationNotes'] ?? '').toString(),
     );
     if (note == null) return;
-    await AppwriteService.updateRow(
+    await BackendService.updateRow(
       tableId,
       row.$id,
       <String, dynamic>{
@@ -825,7 +825,7 @@ class AdminModerationPanel extends StatelessWidget {
                       onPressed: () => _addModerationNote(
                         context,
                         row,
-                        AppwriteService.postsCollectionId,
+                        BackendService.postsCollectionId,
                       ),
                       child: const Text('Add note'),
                     ),
@@ -860,7 +860,7 @@ class AdminModerationPanel extends StatelessWidget {
                       onPressed: () => _addModerationNote(
                         context,
                         row,
-                        AppwriteService.commentsCollectionId,
+                        BackendService.commentsCollectionId,
                       ),
                       child: const Text('Add note'),
                     ),
@@ -886,16 +886,16 @@ class AdminSupportReportsPanel extends StatelessWidget {
   const AdminSupportReportsPanel({super.key, required this.refreshTick});
 
   Future<List<aw.Row>> _loadReports() async {
-    final res = await AppwriteService.getDocuments(
-      AppwriteService.reportsCollectionId,
+    final res = await BackendService.getDocuments(
+      BackendService.reportsCollectionId,
       queries: <String>[Query.limit(60)],
     );
     return res.rows;
   }
 
   Future<List<aw.Row>> _loadSupportRequests() async {
-    final res = await AppwriteService.getDocuments(
-      AppwriteService.supportRequestsCollectionId,
+    final res = await BackendService.getDocuments(
+      BackendService.supportRequestsCollectionId,
       queries: <String>[Query.limit(60)],
     );
     return res.rows;
@@ -907,7 +907,7 @@ class AdminSupportReportsPanel extends StatelessWidget {
     String tableId,
     String status,
   ) async {
-    await AppwriteService.updateRow(
+    await BackendService.updateRow(
       tableId,
       row.$id,
       <String, dynamic>{
@@ -929,8 +929,8 @@ class AdminSupportReportsPanel extends StatelessWidget {
       initialValue: (row.data['moderationNotes'] ?? '').toString(),
     );
     if (note == null) return;
-    await AppwriteService.updateRow(
-      AppwriteService.reportsCollectionId,
+    await BackendService.updateRow(
+      BackendService.reportsCollectionId,
       row.$id,
       <String, dynamic>{
         'moderationNotes': note,
@@ -951,8 +951,8 @@ class AdminSupportReportsPanel extends StatelessWidget {
       initialValue: (row.data['adminReply'] ?? '').toString(),
     );
     if (reply == null) return;
-    await AppwriteService.updateRow(
-      AppwriteService.supportRequestsCollectionId,
+    await BackendService.updateRow(
+      BackendService.supportRequestsCollectionId,
       row.$id,
       <String, dynamic>{
         'adminReply': reply,
@@ -998,7 +998,7 @@ class AdminSupportReportsPanel extends StatelessWidget {
                       onPressed: () => _setRequestStatus(
                         context,
                         row,
-                        AppwriteService.reportsCollectionId,
+                        BackendService.reportsCollectionId,
                         'reviewing',
                       ),
                       child: const Text('Reviewing'),
@@ -1007,7 +1007,7 @@ class AdminSupportReportsPanel extends StatelessWidget {
                       onPressed: () => _setRequestStatus(
                         context,
                         row,
-                        AppwriteService.reportsCollectionId,
+                        BackendService.reportsCollectionId,
                         'resolved',
                       ),
                       child: const Text('Resolve'),
@@ -1049,7 +1049,7 @@ class AdminSupportReportsPanel extends StatelessWidget {
                       onPressed: () => _setRequestStatus(
                         context,
                         row,
-                        AppwriteService.supportRequestsCollectionId,
+                        BackendService.supportRequestsCollectionId,
                         'in_progress',
                       ),
                       child: const Text('In progress'),
@@ -1058,7 +1058,7 @@ class AdminSupportReportsPanel extends StatelessWidget {
                       onPressed: () => _setRequestStatus(
                         context,
                         row,
-                        AppwriteService.supportRequestsCollectionId,
+                        BackendService.supportRequestsCollectionId,
                         'resolved',
                       ),
                       child: const Text('Resolve'),
@@ -1087,16 +1087,16 @@ class AdminPayoutsPanel extends StatelessWidget {
   const AdminPayoutsPanel({super.key, required this.refreshTick});
 
   Future<List<aw.Row>> _loadPayouts() async {
-    final res = await AppwriteService.getDocuments(
-      AppwriteService.creatorPayoutsCollectionId,
+    final res = await BackendService.getDocuments(
+      BackendService.creatorPayoutsCollectionId,
       queries: <String>[Query.limit(60)],
     );
     return res.rows;
   }
 
   Future<List<aw.Row>> _loadBalances() async {
-    final res = await AppwriteService.getDocuments(
-      AppwriteService.creatorBalancesCollectionId,
+    final res = await BackendService.getDocuments(
+      BackendService.creatorBalancesCollectionId,
       queries: <String>[Query.limit(60)],
     );
     return res.rows;
@@ -1107,8 +1107,8 @@ class AdminPayoutsPanel extends StatelessWidget {
     aw.Row row,
     String status,
   ) async {
-    await AppwriteService.updateRow(
-      AppwriteService.creatorPayoutsCollectionId,
+    await BackendService.updateRow(
+      BackendService.creatorPayoutsCollectionId,
       row.$id,
       <String, dynamic>{'status': status},
     );
@@ -1126,8 +1126,8 @@ class AdminPayoutsPanel extends StatelessWidget {
       initialValue: (row.data['approvalNotes'] ?? '').toString(),
     );
     if (note == null) return;
-    await AppwriteService.updateRow(
-      AppwriteService.creatorPayoutsCollectionId,
+    await BackendService.updateRow(
+      BackendService.creatorPayoutsCollectionId,
       row.$id,
       <String, dynamic>{
         'approvalNotes': note,
@@ -1236,15 +1236,15 @@ class _AdminCreatorToolsPanelState extends State<AdminCreatorToolsPanel> {
   Future<_CreatorSupportData?> _loadCreator(String creatorId) async {
     final trimmed = creatorId.trim();
     if (trimmed.isEmpty) return null;
-    final profile = await AppwriteService.getProfileByUserId(trimmed) ??
-        await AppwriteService.getRow(
-          AppwriteService.profilesCollectionId,
+    final profile = await BackendService.getProfileByUserId(trimmed) ??
+        await BackendService.getRow(
+          BackendService.profilesCollectionId,
           trimmed,
         );
     final summary =
-        await AppwriteService.fetchCreatorEarningsSummary(creatorId: trimmed);
-    final balance = await AppwriteService.getLatestCreatorBalance(trimmed);
-    final referrals = await AppwriteService.fetchReferralFollows(trimmed);
+        await BackendService.fetchCreatorEarningsSummary(creatorId: trimmed);
+    final balance = await BackendService.getLatestCreatorBalance(trimmed);
+    final referrals = await BackendService.fetchReferralFollows(trimmed);
     return _CreatorSupportData(
       creatorId: trimmed,
       profile: profile,
@@ -1298,35 +1298,157 @@ class _AdminCreatorToolsPanelState extends State<AdminCreatorToolsPanel> {
                   ),
                 );
               }
-              return _AdminPanelCard(
-                title: 'Creator support summary',
-                child: Column(
-                  children: [
-                    _kvRow('Creator id', data.creatorId),
-                    _kvRow('Display name', _displayName(data.profile)),
-                    _kvRow(
-                      'Username',
-                      '@${(data.profile.data['username'] ?? '').toString()}',
+              final isCheater = data.profile.data['is_cheater'] == true;
+              final taskCount = data.profile.data['task_count'] as int? ?? 0;
+
+              return Column(
+                children: [
+                  _AdminPanelCard(
+                    title: 'Creator Support Summary',
+                    child: Column(
+                      children: [
+                        _kvRow('Creator ID', data.creatorId),
+                        _kvRow('Display name', _displayName(data.profile)),
+                        _kvRow(
+                          'Username',
+                          '@${(data.profile.data['username'] ?? '').toString()}',
+                        ),
+                        _kvRow(
+                          'Completed Tasks (Watch/Review)',
+                          '$taskCount tasks completed',
+                        ),
+                        _kvRow(
+                          'Creator earnings USD',
+                          '${data.earningsSummary['creatorEarningsUsd'] ?? 0}',
+                        ),
+                        _kvRow(
+                          'Available balance USD',
+                          '${data.balance?.data['availableBalanceUsd'] ?? 0}',
+                        ),
+                        _kvRow(
+                          'Status Flag',
+                          isCheater ? '⚠️ BANNED / FLAGGED FOR CHEATING' : '✅ Clean Profile',
+                        ),
+                        _kvRow('Referral count', '${data.referralCount}'),
+                      ],
                     ),
-                    _kvRow(
-                      'Tracked impressions',
-                      '${_intValue(data.earningsSummary['impressions'])}',
+                  ),
+                  const SizedBox(height: 16),
+                  _AdminPanelCard(
+                    title: 'Modify Account Balance directly',
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add Funds (\$1.00)'),
+                            onPressed: () async {
+                              await BackendService.adjustUserBalance(data.creatorId, 1.0);
+                              setState(() {
+                                _future = _loadCreator(data.creatorId);
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
+                            icon: const Icon(Icons.remove),
+                            label: const Text('Deduct Funds (\$1.00)'),
+                            onPressed: () async {
+                              await BackendService.adjustUserBalance(data.creatorId, -1.0);
+                              setState(() {
+                                _future = _loadCreator(data.creatorId);
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 12),
+                          OutlinedButton(
+                            child: const Text('Custom Adjustment'),
+                            onPressed: () async {
+                              final amountStr = await _promptForText(
+                                context,
+                                title: 'Custom Balance Adjustment',
+                                label: 'Enter positive value to add or negative to deduct (e.g. -2.50 or 5.00)',
+                              );
+                              if (amountStr != null) {
+                                final double? val = double.tryParse(amountStr);
+                                if (val != null) {
+                                  await BackendService.adjustUserBalance(data.creatorId, val);
+                                  setState(() {
+                                    _future = _loadCreator(data.creatorId);
+                                  });
+                                }
+                              }
+                            },
+                          ),
+                        ],
+                      ),
                     ),
-                    _kvRow(
-                      'Creator earnings USD',
-                      '${data.earningsSummary['creatorEarningsUsd'] ?? 0}',
+                  ),
+                  const SizedBox(height: 16),
+                  _AdminPanelCard(
+                    title: 'Fraud Control & Suspicious Activity Alerts',
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          if (!isCheater) ...[
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                              icon: const Icon(Icons.gavel),
+                              label: const Text('Mark as Cheater & Fine User'),
+                              onPressed: () async {
+                                final reason = await _promptForText(
+                                  context,
+                                  title: 'Cheating/Fraud Penalty Reason',
+                                  label: 'Describe the suspicious/fake tasks completed',
+                                  initialValue: 'Fraudulent/Fake video task completions detected.',
+                                );
+                                if (reason == null) return;
+
+                                final deductionStr = await _promptForText(
+                                  context,
+                                  title: 'Deduction Amount',
+                                  label: 'Enter penalty USD amount to deduct from their balance',
+                                  initialValue: '2.00',
+                                );
+                                final double deduction = double.tryParse(deductionStr ?? '0.0') ?? 0.0;
+
+                                await BackendService.markUserCheater(
+                                  data.creatorId,
+                                  isCheater: true,
+                                  deduction: deduction,
+                                  reason: reason,
+                                );
+
+                                setState(() {
+                                  _future = _loadCreator(data.creatorId);
+                                });
+                              },
+                            ),
+                          ] else ...[
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Remove Cheater Flag / Pardon'),
+                              onPressed: () async {
+                                await BackendService.markUserCheater(
+                                  data.creatorId,
+                                  isCheater: false,
+                                );
+                                setState(() {
+                                  _future = _loadCreator(data.creatorId);
+                                });
+                              },
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
-                    _kvRow(
-                      'Referral earnings USD',
-                      '${data.earningsSummary['referralEarningsUsd'] ?? 0}',
-                    ),
-                    _kvRow(
-                      'Available balance USD',
-                      '${data.balance?.data['availableBalanceUsd'] ?? 0}',
-                    ),
-                    _kvRow('Referral count', '${data.referralCount}'),
-                  ],
-                ),
+                  ),
+                ],
               );
             },
           ),
@@ -1345,24 +1467,24 @@ class AdminDataBrowserPanel extends StatefulWidget {
 }
 
 class _AdminDataBrowserPanelState extends State<AdminDataBrowserPanel> {
-  String _tableId = AppwriteService.postsCollectionId;
+  String _tableId = BackendService.postsCollectionId;
   late Future<List<aw.Row>> _future;
   final TextEditingController _searchController = TextEditingController();
   String _sortField = 'id';
   bool _descending = true;
 
   static const List<String> _tableIds = [
-    AppwriteService.profilesCollectionId,
-    AppwriteService.postsCollectionId,
-    AppwriteService.commentsCollectionId,
-    AppwriteService.reportsCollectionId,
-    AppwriteService.supportRequestsCollectionId,
-    AppwriteService.notificationsCollectionId,
-    AppwriteService.messagesCollectionId,
-    AppwriteService.chatsCollectionId,
-    AppwriteService.creatorBalancesCollectionId,
-    AppwriteService.creatorPayoutsCollectionId,
-    AppwriteService.adImpressionsCollectionId,
+    BackendService.profilesCollectionId,
+    BackendService.postsCollectionId,
+    BackendService.commentsCollectionId,
+    BackendService.reportsCollectionId,
+    BackendService.supportRequestsCollectionId,
+    BackendService.notificationsCollectionId,
+    BackendService.messagesCollectionId,
+    BackendService.chatsCollectionId,
+    BackendService.creatorBalancesCollectionId,
+    BackendService.creatorPayoutsCollectionId,
+    BackendService.adImpressionsCollectionId,
   ];
 
   @override
@@ -1378,7 +1500,7 @@ class _AdminDataBrowserPanelState extends State<AdminDataBrowserPanel> {
   }
 
   Future<List<aw.Row>> _load() async {
-    final res = await AppwriteService.getDocuments(
+    final res = await BackendService.getDocuments(
       _tableId,
       queries: <String>[Query.limit(50)],
     );
@@ -1396,7 +1518,7 @@ class _AdminDataBrowserPanelState extends State<AdminDataBrowserPanel> {
               child: DropdownButtonFormField<String>(
                 initialValue: _tableId,
                 decoration: const InputDecoration(
-                  labelText: 'Appwrite table',
+                  labelText: 'Database table',
                   border: OutlineInputBorder(),
                 ),
                 items: _tableIds
@@ -1563,7 +1685,7 @@ class _AdminOperationsPanelState extends State<AdminOperationsPanel> {
       _syncStatus = null;
     });
     try {
-      final result = await AppwriteService.syncAdmobRevenue();
+      final result = await BackendService.syncAdmobRevenue();
       if (!mounted) return;
       setState(() {
         _syncing = false;
@@ -1591,7 +1713,7 @@ class _AdminOperationsPanelState extends State<AdminOperationsPanel> {
               _kvRow('Site URL', dotenv.env['XAPZAP_SITE_URL'] ?? '-'),
               _kvRow(
                 'Block/filter function',
-                dotenv.env['APPWRITE_BLOCK_FILTER_FUNCTION_ID'] ?? '-',
+                dotenv.env['BLOCK_FILTER_FUNCTION_ID'] ?? '-',
               ),
             ],
           ),

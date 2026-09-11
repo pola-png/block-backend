@@ -2,11 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
-import 'package:appwrite/models.dart' as aw;
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+import 'package:xapzap/models/database_models.dart' as aw;
+
 import '../models/post.dart';
 import '../models/news_article.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/feed_exposure_service.dart';
 import '../services/storage_service.dart';
 import '../services/feed_cache.dart';
@@ -40,6 +40,7 @@ import 'live_screen.dart';
 import 'news_detail_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../widgets/micro_jobs_view.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -105,7 +106,7 @@ class _HomeScreenState extends State<HomeScreen>
   void initState() {
     super.initState();
     _checkUser();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     StoryManager.init();
     _storiesListener = _syncStories;
     StoryManager.stories.addListener(_storiesListener);
@@ -156,7 +157,7 @@ class _HomeScreenState extends State<HomeScreen>
   /// user scrolls. This mirrors how major social apps pre-resolve avatars,
   /// display names, and like state so each card renders instantly.
   Future<void> _prefetchFirstBatch() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     final posts = _forYouPosts.take(8).toList();
     if (posts.isEmpty) return;
 
@@ -168,7 +169,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     // 1. Warm profile cache (display name + avatar) for each unique author.
     final profileFutures = authorIds
-        .map((id) => AppwriteService.getProfileByUserId(id).then((prof) async {
+        .map((id) => BackendService.getProfileByUserId(id).then((prof) async {
               if (prof == null) return;
               final rawAvatar = (prof.data['avatarUrl'] as String?)?.trim() ?? '';
               if (rawAvatar.isNotEmpty) {
@@ -182,7 +183,7 @@ class _HomeScreenState extends State<HomeScreen>
         ? <Future<void>>[]
         : posts.map((post) async {
             try {
-              final liked = await AppwriteService.isPostLikedBy(user.$id, post.id);
+              final liked = await BackendService.isPostLikedBy(user.$id, post.id);
               // Cache the result into the static like map that PostCard reads.
               if (liked) PostCard.primePostLikedCache(post.id, liked);
             } catch (_) {}
@@ -294,13 +295,13 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _checkUser() async {
     // 1. Immediately sync details from memory/disk cache for instant rendering
-    final syncUser = AppwriteService.getCurrentUserSync();
+    final syncUser = BackendService.getCurrentUserSync();
     if (syncUser != null) {
       _isGuest = false;
       _currentUserId = syncUser.$id;
       final cachedAvatar = AvatarCache.getForUserId(syncUser.$id);
       String displayName = '';
-      final cachedProfile = AppwriteService.getCachedProfileByUserId(syncUser.$id);
+      final cachedProfile = BackendService.getCachedProfileByUserId(syncUser.$id);
       if (cachedProfile != null) {
         displayName = (cachedProfile.data['displayName'] as String?)?.trim() ?? '';
       }
@@ -311,7 +312,7 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     // 2. Perform async refresh in background
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     setState(() {
       _isGuest = user == null;
@@ -319,12 +320,12 @@ class _HomeScreenState extends State<HomeScreen>
     });
     if (user != null) {
       unawaited(PushNotificationService.maybeRequestNotificationPermissionOnLaunch());
-      _followingIds = await AppwriteService.getFollowingUserIds(user.$id);
+      _followingIds = await BackendService.getFollowingUserIds(user.$id);
       // listen for follow/unfollow changes
-      AppwriteService.followingVersion.addListener(() async {
-        final me = await AppwriteService.getCurrentUser();
+      BackendService.followingVersion.addListener(() async {
+        final me = await BackendService.getCurrentUser();
         if (me != null && mounted) {
-          _followingIds = await AppwriteService.getFollowingUserIds(me.$id);
+          _followingIds = await BackendService.getFollowingUserIds(me.$id);
           await _refreshFeed(false);
         }
       });
@@ -337,7 +338,7 @@ class _HomeScreenState extends State<HomeScreen>
       try {
         String? avatar = AvatarCache.getForUserId(user.$id);
         if (avatar == null) {
-          final prof = await AppwriteService.getProfileByUserId(user.$id);
+          final prof = await BackendService.getProfileByUserId(user.$id);
           final raw = prof?.data['avatarUrl'] as String?;
           if (raw != null && raw.isNotEmpty) {
             if (raw.startsWith('http://') || raw.startsWith('https://')) {
@@ -353,7 +354,7 @@ class _HomeScreenState extends State<HomeScreen>
           }
         }
         String displayName = '';
-        final prof = await AppwriteService.getProfileByUserId(user.$id);
+        final prof = await BackendService.getProfileByUserId(user.$id);
         if (prof != null) {
           final data = prof.data;
           final rawName = (data['displayName'] as String?)?.trim();
@@ -414,9 +415,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _subscribePostsRealtime() {
     final channel =
-        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.postsCollectionId}.documents';
+        'databases.${BackendService.databaseId}.collections.${BackendService.postsCollectionId}.documents';
     try {
-      _postsSub = AppwriteService.realtime.subscribe([channel]);
+      _postsSub = BackendService.realtime.subscribe([channel]);
       _postsSub?.stream.listen((event) async {
         if (!mounted) return;
         if (event.events.isEmpty) return;
@@ -516,6 +517,7 @@ class _HomeScreenState extends State<HomeScreen>
             indicatorColor: onSurface,
             onTap: _handleTabTap,
             tabs: const [
+              Tab(text: 'Jobs', height: 36),
               Tab(text: 'For You', height: 36),
               Tab(text: 'Watch', height: 36),
               Tab(text: 'Reels', height: 36),
@@ -538,9 +540,9 @@ class _HomeScreenState extends State<HomeScreen>
     Color onSurface,
     Color onSurfaceVariant,
   ) {
-    final bool isWatchTab = _tabController.index == 1;
-    final bool isReelsTab = _tabController.index == 2;
-    final bool isLiveTab = _tabController.index == 3;
+    final bool isWatchTab = _tabController.index == 2;
+    final bool isReelsTab = _tabController.index == 3;
+    final bool isLiveTab = _tabController.index == 4;
     final bool isCompactNav = isWatchTab || isReelsTab || isLiveTab;
     return Scaffold(
       // Header is rendered by MainScreen on desktop.
@@ -553,39 +555,45 @@ class _HomeScreenState extends State<HomeScreen>
               children: [
                 const SizedBox(height: 4),
                 _buildSideNavItem(
+                  Icons.work_outline,
+                  'Jobs',
+                  0,
+                  compact: isCompactNav,
+                ),
+                _buildSideNavItem(
                   Icons.home_filled,
                   'For You',
-                  0,
+                  1,
                   compact: isCompactNav,
                 ),
                 _buildSideNavItem(
                   Icons.ondemand_video_outlined,
                   'Watch',
-                  1,
+                  2,
                   compact: isCompactNav,
                 ),
                 _buildSideNavItem(
                   Icons.video_library_outlined,
                   'Reels',
-                  2,
+                  3,
                   compact: isCompactNav,
                 ),
                 _buildSideNavItem(
                   Icons.wifi_tethering,
                   'Live',
-                  3,
+                  4,
                   compact: isCompactNav,
                 ),
                 _buildSideNavItem(
                   Icons.article_outlined,
                   'News',
-                  4,
+                  5,
                   compact: isCompactNav,
                 ),
                 _buildSideNavItem(
                   Icons.groups_outlined,
                   'Following',
-                  5,
+                  6,
                   compact: isCompactNav,
                 ),
               ],
@@ -667,6 +675,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   List<Widget> _buildTabViews() {
     return [
+      const MicroJobsView(),
       KeepAliveTab(
         builder: (_) => _buildFeed(_forYouPosts, _forYouController, true),
       ),
@@ -682,18 +691,18 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _handleTabTap(int index) async {
-    if (index == 1 || index == 2) {
+    if (index == 2 || index == 3) {
       final ok = await _ensureMonetizedConsent();
       if (!ok) {
         // Force back to For You tab on cancel.
-        _tabController.index = 0;
+        _tabController.index = 1;
         setState(() {});
         return;
       }
-      if (index == 1 && _watchPosts.isEmpty && !_isLoadingWatch) {
+      if (index == 2 && _watchPosts.isEmpty && !_isLoadingWatch) {
         await _refreshWatchFeed();
       }
-      if (index == 2 && _reelsPosts.isEmpty && !_isLoadingReels) {
+      if (index == 3 && _reelsPosts.isEmpty && !_isLoadingReels) {
         await _refreshReelsFeed();
       }
     }
@@ -917,7 +926,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (_isLoadingNews || !_hasMoreNews) return;
     setState(() => _isLoadingNews = true);
     try {
-      final aw.RowList list = await AppwriteService.fetchNewsArticles(
+      final aw.RowList list = await BackendService.fetchNewsArticles(
         limit: 20,
         cursorId: _newsCursor,
       );
@@ -2130,17 +2139,17 @@ class _HomeScreenState extends State<HomeScreen>
       final fetchLimit = 20;
       final aw.RowList docsList = isForYou
           ? await (_isGuest
-              ? AppwriteService.fetchPosts(
+              ? BackendService.fetchPosts(
                   limit: fetchLimit,
                   applyFeedRanking: true,
                   sessionSeed: _feedRefreshSeed,
                 )
-              : AppwriteService.fetchForYouFeed(
+              : BackendService.fetchForYouFeed(
                   userId: _currentUserId,
                   limit: fetchLimit,
                   sessionSeed: _feedRefreshSeed,
                 ))
-          : await AppwriteService.fetchPostsByUserIds(
+          : await BackendService.fetchPostsByUserIds(
               _followingIds,
               limit: fetchLimit,
               sessionSeed: _feedRefreshSeed,
@@ -2180,8 +2189,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _promotePublishedPostToTop(String postId) async {
     try {
-      final row = await AppwriteService.getRow(
-          AppwriteService.postsCollectionId, postId);
+      final row = await BackendService.getRow(
+          BackendService.postsCollectionId, postId);
       final post = await _mapRowToPost(row);
       if (post == null || !mounted) return;
       _insertPostAtTop(post, true);
@@ -2380,7 +2389,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _handleStoryTap(int index) async {
     if (index == 0) {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) {
         _showGuestPrompt();
         return;
@@ -2388,7 +2397,7 @@ class _HomeScreenState extends State<HomeScreen>
       _showStoryOptions();
       return;
     }
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     if (user == null) {
       _showGuestPrompt();
@@ -2541,19 +2550,19 @@ class _HomeScreenState extends State<HomeScreen>
           : (_followingCursor == null ? 20 : 10);
       final feedPage = isForYou
           ? await (_isGuest
-              ? AppwriteService.fetchPostsPage(
+              ? BackendService.fetchPostsPage(
                   limit: fetchLimit,
                   cursorId: _forYouCursor,
                   applyFeedRanking: true,
                   sessionSeed: _feedRefreshSeed,
                 )
-              : AppwriteService.fetchForYouFeedPage(
+              : BackendService.fetchForYouFeedPage(
                   userId: _currentUserId,
                   limit: fetchLimit,
                   cursorId: _forYouCursor,
                   sessionSeed: _feedRefreshSeed,
                 ))
-          : await AppwriteService.fetchPostsByUserIdsPage(
+          : await BackendService.fetchPostsByUserIdsPage(
               _followingIds,
               limit: fetchLimit,
               cursorId: _followingCursor,
@@ -2562,7 +2571,7 @@ class _HomeScreenState extends State<HomeScreen>
       final List<aw.Row> docs = feedPage.rows;
       if (_currentUserId != null && docs.isNotEmpty) {
         try {
-          await AppwriteService.prefetchUserReactionsAndFollows(
+          await BackendService.prefetchUserReactionsAndFollows(
             userId: _currentUserId!,
             postIds: docs.map((d) => d.$id).toList(),
             authorIds: docs
@@ -2653,7 +2662,7 @@ class _HomeScreenState extends State<HomeScreen>
 
       // For following feed, also merge repost events (mirror behavior)
       if (!isForYou && _followingIds.isNotEmpty) {
-        final repostRows = await AppwriteService.fetchRepostsByUserIds(
+        final repostRows = await BackendService.fetchRepostsByUserIds(
           _followingIds,
           limit: 20,
         );
@@ -2663,8 +2672,8 @@ class _HomeScreenState extends State<HomeScreen>
           final userId = rData['userId'] as String?;
           if (postId == null || userId == null) continue;
           try {
-            final original = await AppwriteService.getRow(
-              AppwriteService.postsCollectionId,
+            final original = await BackendService.getRow(
+              BackendService.postsCollectionId,
               postId,
             );
             final data = original.data;
@@ -2805,7 +2814,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (_isLoadingWatch) return;
     setState(() => _isLoadingWatch = true);
     try {
-      final docsList = await AppwriteService.fetchWatchFeedPage(
+      final docsList = await BackendService.fetchWatchFeedPage(
         limit: _watchCursor == null ? 20 : 10,
         cursorId: _watchCursor,
         sessionSeed: _feedRefreshSeed,
@@ -2813,7 +2822,7 @@ class _HomeScreenState extends State<HomeScreen>
       final docs = docsList.rows;
       if (_currentUserId != null && docs.isNotEmpty) {
         try {
-          await AppwriteService.prefetchUserReactionsAndFollows(
+          await BackendService.prefetchUserReactionsAndFollows(
             userId: _currentUserId!,
             postIds: docs.map((d) => d.$id).toList(),
             authorIds: docs
@@ -2860,7 +2869,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (_isLoadingReels) return;
     setState(() => _isLoadingReels = true);
     try {
-      final docsList = await AppwriteService.fetchReelsFeedPage(
+      final docsList = await BackendService.fetchReelsFeedPage(
         limit: _reelsCursor == null ? 20 : 10,
         cursorId: _reelsCursor,
         sessionSeed: _feedRefreshSeed,
@@ -2868,7 +2877,7 @@ class _HomeScreenState extends State<HomeScreen>
       final docs = docsList.rows;
       if (_currentUserId != null && docs.isNotEmpty) {
         try {
-          await AppwriteService.prefetchUserReactionsAndFollows(
+          await BackendService.prefetchUserReactionsAndFollows(
             userId: _currentUserId!,
             postIds: docs.map((d) => d.$id).toList(),
             authorIds: docs
@@ -2983,7 +2992,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<String?> _resolvePostImageUrl(String url) async {
     if (_homeSignedCache.containsKey(url)) return _homeSignedCache[url]!;
-    if (url.contains('cloud.appwrite.io')) {
+    if (url.contains('supabase.co') || url.contains('supabase.in')) {
       _homeSignedCache[url] = url;
       return url;
     }

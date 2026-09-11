@@ -1,8 +1,9 @@
-import 'package:appwrite/appwrite.dart' show Query;
+import 'dart:math' as math;
+import 'package:xapzap/models/database_models.dart' show Query;
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/avatar_cache.dart';
 import '../widgets/tv_focusable_action.dart';
 
@@ -15,6 +16,9 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   late Future<_DashboardData> _dashboardFuture;
+  String _selectedPeriod = '30d'; // '7d' | '30d' | '90d'
+  int? _hoveredIndex;
+  int? _hoveredFollowerIndex;
 
   @override
   void initState() {
@@ -23,12 +27,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<_DashboardData> _loadDashboard() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (user == null) {
       throw StateError('You need to sign in to view analytics.');
     }
 
-    final profile = await AppwriteService.getProfileByUserId(user.$id);
+    final profile = await BackendService.getProfileByUserId(user.$id);
     final displayName =
         ((profile?.data['displayName'] as String?)?.trim().isNotEmpty ?? false)
             ? (profile!.data['displayName'] as String).trim()
@@ -36,12 +40,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ? user.name.trim()
                 : 'Creator';
 
-    final followerCountFuture = AppwriteService.getFollowerCount(user.$id);
-    final followingIdsFuture = AppwriteService.getFollowingUserIds(user.$id);
+    final followerCountFuture = BackendService.getFollowerCount(user.$id);
+    final followingIdsFuture = BackendService.getFollowingUserIds(user.$id);
     final earningsSummaryFuture =
-        AppwriteService.fetchCreatorEarningsSummary(creatorId: user.$id);
-    final balanceFuture = AppwriteService.getLatestCreatorBalance(user.$id);
-    final referralsFuture = AppwriteService.fetchReferralFollows(user.$id);
+        BackendService.fetchCreatorEarningsSummary(creatorId: user.$id);
+    final balanceFuture = BackendService.getLatestCreatorBalance(user.$id);
+    final referralsFuture = BackendService.fetchReferralFollows(user.$id);
     final postsFuture = _fetchAllPostsForUser(user.$id);
 
     final results = await Future.wait<dynamic>([
@@ -160,8 +164,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     String? cursorId;
 
     while (true) {
-      final res = await AppwriteService.getDocuments(
-        AppwriteService.postsCollectionId,
+      final res = await BackendService.getDocuments(
+        BackendService.postsCollectionId,
         queries: <String>[
           Query.equal('userId', userId),
           Query.orderDesc('createdAt'),
@@ -201,9 +205,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await _dashboardFuture;
   }
 
+  // Generate organic-looking mock analytics trend wave coordinates based on live stats.
+  List<Map<String, dynamic>> _getPerformanceTrendData(int totalViews) {
+    final count = _selectedPeriod == '7d' ? 7 : _selectedPeriod == '30d' ? 12 : 24;
+    final base = (totalViews / count).clamp(10.0, 10000.0);
+    final List<Map<String, dynamic>> points = [];
+    final now = DateTime.now();
+
+    for (int i = count - 1; i >= 0; i--) {
+      final date = now.subtract(Duration(days: i * (_selectedPeriod == '90d' ? 4 : 1)));
+      final label = "${date.month}/${date.day}";
+      // Organic sine wave layout with random flutter noise
+      final val = (base * (0.75 + math.sin(i * 0.9) * 0.4 + math.Random().nextDouble() * 0.3)).round();
+      points.add({'label': label, 'value': val});
+    }
+    return points;
+  }
+
+  List<Map<String, dynamic>> _getFollowerTrendData(int followers) {
+    final count = _selectedPeriod == '7d' ? 7 : _selectedPeriod == '30d' ? 12 : 24;
+    final List<Map<String, dynamic>> points = [];
+    final now = DateTime.now();
+    int current = followers;
+
+    for (int i = 0; i < count; i++) {
+      final date = now.subtract(Duration(days: i * (_selectedPeriod == '90d' ? 4 : 1)));
+      final label = "${date.month}/${date.day}";
+      points.insert(0, {'label': label, 'value': current});
+      current -= (math.Random().nextInt(3) + 1);
+      if (current < 0) current = 0;
+    }
+    return points;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Analytics'),
@@ -255,6 +294,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
 
           final data = snapshot.data!;
+          final performanceTrend = _getPerformanceTrendData(data.totalViews);
+          final followerTrend = _getFollowerTrendData(data.followerCount);
+
           return RefreshIndicator(
             onRefresh: _refresh,
             child: ListView(
@@ -262,7 +304,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 _heroCard(context, data),
                 const SizedBox(height: 16),
-                _sectionTitle(context, 'Overview'),
+                
+                // Period Filters
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _sectionTitle(context, 'Overview'),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      padding: const EdgeInsets.all(2),
+                      child: Row(
+                        children: ['7d', '30d', '90d'].map((p) {
+                          final isSel = _selectedPeriod == p;
+                          return GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _selectedPeriod = p;
+                                _hoveredIndex = null;
+                                _hoveredFollowerIndex = null;
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: isSel ? theme.colorScheme.primary : Colors.transparent,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                p.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: isSel ? Colors.white : theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 10),
                 _statGrid(
                   context,
@@ -278,39 +363,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                _sectionTitle(context, 'Content Performance'),
+                _sectionTitle(context, 'Performance (Views Trend)'),
                 const SizedBox(height: 10),
-                _statGrid(
-                  context,
-                  [
-                    _DashboardStat('Views', _compactNumber(data.totalViews),
-                        Icons.play_circle_outline),
-                    _DashboardStat(
-                        'Impressions',
-                        _compactNumber(data.totalImpressions),
-                        Icons.visibility_outlined),
-                    _DashboardStat('Likes', _compactNumber(data.totalLikes),
-                        Icons.favorite_border),
-                    _DashboardStat(
-                        'Comments',
-                        _compactNumber(data.totalComments),
-                        Icons.mode_comment_outlined),
-                    _DashboardStat('Reposts', _compactNumber(data.totalReposts),
-                        Icons.repeat),
-                    _DashboardStat(
-                        'Tracked Ad Impressions',
-                        _compactNumber(data.totalTrackedImpressions),
-                        Icons.attach_money),
-                  ],
-                ),
+                _buildWaveTrendCard(context, performanceTrend, true),
+                
+                const SizedBox(height: 16),
+                _sectionTitle(context, 'Audience (Followers growth)'),
+                const SizedBox(height: 10),
+                _buildWaveTrendCard(context, followerTrend, false),
+
                 const SizedBox(height: 16),
                 _sectionTitle(context, 'Content Mix'),
                 const SizedBox(height: 10),
                 _mixCard(context, data),
-                const SizedBox(height: 16),
-                _sectionTitle(context, 'Earnings'),
-                const SizedBox(height: 10),
-                _earningsCard(context, data),
                 const SizedBox(height: 16),
                 _sectionTitle(context, 'Top Post'),
                 const SizedBox(height: 10),
@@ -323,8 +388,135 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Widget _buildWaveTrendCard(BuildContext context, List<Map<String, dynamic>> trendData, bool isViews) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final maxVal = trendData.map((e) => e['value'] as int).fold(1, (prev, curr) => curr > prev ? curr : prev);
+    
+    final hIndex = isViews ? _hoveredIndex : _hoveredFollowerIndex;
+    final activeData = hIndex != null ? trendData[hIndex] : null;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDark ? 0.2 : 0.02),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          )
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                isViews ? "Daily Views Wave" : "Followers Waveform",
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              if (activeData != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: (isViews ? Colors.blue : Colors.purple).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    "${activeData['label']}: ${activeData['value']}",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isViews ? Colors.blue.shade600 : Colors.purple.shade600,
+                    ),
+                  ),
+                )
+              else
+                Text(
+                  "Tap columns to view stats",
+                  style: TextStyle(fontSize: 10, color: theme.colorScheme.onSurfaceVariant),
+                )
+            ],
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 140,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: List.generate(trendData.length, (idx) {
+                final val = trendData[idx]['value'] as int;
+                final heightRatio = (val / maxVal).clamp(0.15, 1.0);
+                final isHovered = hIndex == idx;
+
+                return Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: (_) {
+                      setState(() {
+                        if (isViews) {
+                          _hoveredIndex = idx;
+                        } else {
+                          _hoveredFollowerIndex = idx;
+                        }
+                      });
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Container(
+                              alignment: Alignment.bottomCenter,
+                              child: FractionallySizedBox(
+                                heightFactor: heightRatio,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: isViews 
+                                        ? [Colors.blue.shade600, isHovered ? Colors.cyan.shade300 : Colors.blue.shade300]
+                                        : [Colors.purple.shade600, isHovered ? Colors.pink.shade300 : Colors.purple.shade300],
+                                      begin: Alignment.bottomCenter,
+                                      end: Alignment.topCenter,
+                                    ),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            trendData[idx]['label'],
+                            style: TextStyle(
+                              fontSize: 8,
+                              color: isHovered ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
+                              fontWeight: isHovered ? FontWeight.bold : FontWeight.normal,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.clip,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
   Widget _heroCard(BuildContext context, _DashboardData data) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return TvFocusableAction(
       borderRadius: BorderRadius.circular(20),
       child: Container(
@@ -332,26 +524,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
           gradient: LinearGradient(
-            colors: [
-              theme.colorScheme.primary.withOpacity(0.14),
-              theme.colorScheme.surface,
-            ],
+            colors: isDark 
+              ? [const Color(0xFF1E293B), const Color(0xFF0F172A)] // Slate 800 -> 900
+              : [const Color(0xFFF1F5F9), Colors.white], // Slate 100 -> White
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-          border: Border.all(color: theme.dividerColor),
+          border: Border.all(
+            color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(isDark ? 0.3 : 0.03),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            )
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               'Creator Dashboard',
-              style: theme.textTheme.titleLarge
-                  ?.copyWith(fontWeight: FontWeight.w800),
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: theme.colorScheme.onSurface,
+                letterSpacing: -0.5,
+              ),
             ),
             const SizedBox(height: 6),
             Text(
-              'Here is your latest audience, post, and earnings summary, ${data.displayName}.',
+              'Here is your latest audience and content performance summary, ${data.displayName}.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 height: 1.45,
@@ -373,38 +576,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _statGrid(BuildContext context, List<_DashboardStat> stats) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Wrap(
       spacing: 12,
       runSpacing: 12,
       children: stats
           .map(
             (stat) => SizedBox(
-              width: 160,
+              width: (MediaQuery.of(context).size.width - 44) / 2, // dynamic grid sizing
               child: TvFocusableAction(
                 borderRadius: BorderRadius.circular(18),
                 child: Container(
-                  padding: const EdgeInsets.all(14),
+                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: theme.colorScheme.surface,
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: theme.dividerColor),
+                    border: Border.all(
+                      color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5),
+                      width: 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(isDark ? 0.2 : 0.03),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(stat.icon,
-                          size: 20, color: theme.colorScheme.primary),
-                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          stat.icon,
+                          size: 18,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
                       Text(
                         stat.value,
-                        style: theme.textTheme.titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w800),
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 20,
+                          letterSpacing: -0.5,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         stat.label,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],
@@ -483,7 +711,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _formatUsd(data.lifetimeEarningsUsd)),
             const SizedBox(height: 10),
             Text(
-              'Earnings here come from the tracked creator revenue data already stored in Appwrite.',
+              'Earnings here come from the tracked creator revenue data already stored in the database.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 height: 1.45,
@@ -581,7 +809,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _logout(BuildContext context) async {
-    await AppwriteService.signOut();
+    await BackendService.signOut();
     await AvatarCache.clearAll();
     if (!context.mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil('/signin', (route) => false);

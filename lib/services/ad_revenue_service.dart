@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 import 'firebase_service.dart';
 
 /// Lightweight helper to capture impression-level ad revenue (ILRD).
@@ -81,9 +81,9 @@ class AdRevenueService {
 
     // Send to Appwrite for server-side payout tracking (best-effort).
     try {
-      final user = await AppwriteService.getCurrentUser();
-      await AppwriteService.createDocument(
-        AppwriteService.adRevenueCollectionId,
+      final user = await BackendService.getCurrentUser();
+      await BackendService.createDocument(
+        BackendService.adRevenueCollectionId,
         {
           'userId': user?.$id,
           'adUnitId': adUnitId,
@@ -97,12 +97,12 @@ class AdRevenueService {
         },
       );
       await _writeBackendStatus(
-        table: AppwriteService.adRevenueCollectionId,
+        table: BackendService.adRevenueCollectionId,
         success: true,
       );
     } catch (_) {
       await _writeBackendStatus(
-        table: AppwriteService.adRevenueCollectionId,
+        table: BackendService.adRevenueCollectionId,
         success: false,
         message:
             'Failed to write ad revenue event to Appwrite. Check table permissions and schema.',
@@ -122,10 +122,10 @@ class AdRevenueService {
     if (safeCreatorId.isEmpty || safeAdUnitId.isEmpty) return;
 
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       final now = DateTime.now().toUtc();
-      await AppwriteService.createDocument(
-        AppwriteService.adImpressionsCollectionId,
+      await BackendService.createDocument(
+        BackendService.adImpressionsCollectionId,
         {
           'creatorId': safeCreatorId,
           'viewerUserId': user?.$id,
@@ -139,12 +139,12 @@ class AdRevenueService {
         },
       );
       await _writeBackendStatus(
-        table: AppwriteService.adImpressionsCollectionId,
+        table: BackendService.adImpressionsCollectionId,
         success: true,
       );
     } catch (_) {
       await _writeBackendStatus(
-        table: AppwriteService.adImpressionsCollectionId,
+        table: BackendService.adImpressionsCollectionId,
         success: false,
         message:
             'Failed to write creator ad impression to Appwrite. Check table permissions and schema.',

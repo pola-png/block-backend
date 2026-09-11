@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
-import 'package:appwrite/models.dart' as aw;
+
+import 'package:xapzap/models/database_models.dart' as aw;
 import '../models/chat.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/chat_preview_cache.dart';
 import '../services/chat_prefetch_service.dart';
 import '../services/profile_preview_cache.dart';
@@ -84,12 +84,12 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   Future<void> _loadChats() async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return;
     _currentUserId = me.$id;
 
     try {
-      final aw.RowList list = await AppwriteService.fetchChatsForUser(me.$id);
+      final aw.RowList list = await BackendService.fetchChatsForUser(me.$id);
       final chats = list.rows
           .map((row) => _buildChatPreview(row, me.$id))
           .whereType<Chat>()
@@ -130,7 +130,7 @@ class _ChatScreenState extends State<ChatScreen>
     final unread = cached != null
         ? cached.messages.where((m) => !m.isSent && !m.isRead).length
         : _chatUnreadCountFromRow(data);
-    final cachedProfile = AppwriteService.peekCachedProfileByUserId(partnerId);
+    final cachedProfile = BackendService.peekCachedProfileByUserId(partnerId);
     final cachedData = cachedProfile?.data ?? const <String, dynamic>{};
     final profilePreview =
         ProfilePreviewCache.getByUserId(partnerId);
@@ -187,7 +187,7 @@ class _ChatScreenState extends State<ChatScreen>
             userIds.firstWhere((id) => id != meId, orElse: () => meId);
         if (partnerId == meId) continue;
 
-        final profile = await AppwriteService.getProfileByUserId(partnerId);
+        final profile = await BackendService.getProfileByUserId(partnerId);
         final pdata = profile?.data ?? <String, dynamic>{};
         String avatar = (pdata['avatarUrl'] as String?)?.trim() ?? '';
         if (avatar.isNotEmpty && !avatar.startsWith('http')) {
@@ -314,9 +314,9 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _subscribeMessages() {
     final channel =
-        'databases.${AppwriteService.databaseId}.collections.${AppwriteService.messagesCollectionId}.documents';
+        'databases.${BackendService.databaseId}.collections.${BackendService.messagesCollectionId}.documents';
     try {
-      _messagesSub = AppwriteService.realtime.subscribe([channel]);
+      _messagesSub = BackendService.realtime.subscribe([channel]);
       _messagesSub?.stream.listen((event) async {
         if (!mounted) return;
         if (event.events.isEmpty) return;
@@ -326,7 +326,7 @@ class _ChatScreenState extends State<ChatScreen>
           final chatId = (payload['chatId'] as String?)?.trim() ?? '';
           if (chatId.isNotEmpty) {
             final senderId = (payload['senderId'] as String?) ?? '';
-            final user = await AppwriteService.getCurrentUser();
+            final user = await BackendService.getCurrentUser();
             if (user != null) {
               final readBy = payload['readBy'] is List
                   ? (payload['readBy'] as List).map((e) => e.toString().trim()).toList()

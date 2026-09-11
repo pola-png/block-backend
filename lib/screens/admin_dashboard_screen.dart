@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:appwrite/models.dart' as aw;
-import '../services/appwrite_service.dart';
+import 'package:xapzap/models/database_models.dart' as aw;
+import '../services/backend_service.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -22,7 +22,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   Future<void> _bootstrap() async {
-    final isAdmin = await AppwriteService.isCurrentUserAdmin();
+    final isAdmin = await BackendService.isCurrentUserAdmin();
     if (!mounted) return;
     setState(() {
       _isAdmin = isAdmin;
@@ -44,7 +44,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     }
     try {
       final res =
-          await AppwriteService.listProfiles(limit: 50, cursor: _cursor);
+          await BackendService.listProfiles(limit: 50, cursor: _cursor);
       if (!mounted) return;
       setState(() {
         _profiles.addAll(res.rows);
@@ -68,7 +68,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       }
     });
     try {
-      await AppwriteService.setAdminFlag(userId, value);
+      await BackendService.setAdminFlag(userId, value);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

@@ -4,7 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:video_player/video_player.dart';
-import 'package:xapzap/services/appwrite_service.dart';
+import 'package:xapzap/services/backend_service.dart';
 import 'package:xapzap/services/crypto_service.dart';
 
 import '../models/status.dart';
@@ -677,10 +677,10 @@ class _StatusViewerScreenState extends State<StatusViewerScreen>
   void _sendReply() async {
     if (_replyController.text.trim().isNotEmpty) {
       try {
-        final currentUser = await AppwriteService.getCurrentUser();
+        final currentUser = await BackendService.getCurrentUser();
         if (currentUser == null) return;
 
-        final chatId = await AppwriteService.getChatId(
+        final chatId = await BackendService.getChatId(
           currentUser.$id,
           widget.status.id,
         );
@@ -694,8 +694,8 @@ class _StatusViewerScreenState extends State<StatusViewerScreen>
           throw StateError('Secure messaging is not ready on this device.');
         }
 
-        await AppwriteService.createDocument(
-          AppwriteService.messagesCollectionId,
+        await BackendService.createDocument(
+          BackendService.messagesCollectionId,
           {
             'chatId': chatId,
             'senderId': currentUser.$id,
@@ -793,7 +793,7 @@ class _StatusViewerScreenState extends State<StatusViewerScreen>
     setState(() {
       status.views += 1;
     });
-    await AppwriteService.incrementStatusViews(status.id, 1);
+    await BackendService.incrementStatusViews(status.id, 1);
   }
 
   void _advanceToNextStatus() {

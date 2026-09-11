@@ -1,5 +1,6 @@
 class Environment {
-  static const String appwriteProjectId = '690641ad0029b51eefe0';
-  static const String appwriteProjectName = 'XapZap';
-  static const String appwritePublicEndpoint = 'https://api.xapzap.com/v1';
+
+
+  static const String supabaseUrl = 'https://tnjmwahnzosuhqpkvuwo.supabase.co';
+  static const String supabaseAnonKey = 'sb_publishable_UsS2epc-9_3939xFfzWyLw_Fjv0uUh5';
 }

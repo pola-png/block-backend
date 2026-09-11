@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 
 class HelpSupportScreen extends StatefulWidget {
   const HelpSupportScreen({super.key});
@@ -42,7 +42,7 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
 
     setState(() => _submitting = true);
     try {
-      await AppwriteService.createSupportRequest(
+      await BackendService.createSupportRequest(
         subject: subject,
         message: message,
         category: _category,

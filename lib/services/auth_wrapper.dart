@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import '../screens/main_screen.dart';
 import '../screens/auth/sign_in_screen.dart';
 import '../screens/banned_screen.dart';
-import 'appwrite_service.dart';
+import 'backend_service.dart';
 import 'crypto_service.dart';
 import 'device_mode_service.dart';
 
@@ -24,16 +24,16 @@ class _AuthWrapperState extends State<AuthWrapper> {
   @override
   void initState() {
     super.initState();
-    final cachedUser = AppwriteService.getCurrentUserSync();
-    final cachedBanned = AppwriteService.isUserBannedSync();
-    final isLoggedIn = AppwriteService.isLoggedInSync();
+    final cachedUser = BackendService.getCurrentUserSync();
+    final cachedBanned = BackendService.isUserBannedSync();
+    final isLoggedIn = BackendService.isLoggedInSync();
 
     if (isLoggedIn || cachedUser != null) {
       _isLoading = false;
       _isAuthenticated = !cachedBanned;
       _isBanned = cachedBanned;
 
-      unawaited(AppwriteService.validateSessionAndStatus(
+      unawaited(BackendService.validateSessionAndStatus(
         onCompleted: (isAuthenticated, isBanned) {
           if (!mounted) return;
           if (_isAuthenticated != isAuthenticated || _isBanned != isBanned) {
@@ -47,7 +47,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
       if (!cachedBanned) {
         unawaited(CryptoService.ensureIdentityKeysAndPublish());
-        unawaited(AppwriteService.maybeAutoSyncAdmobRevenue());
+        unawaited(BackendService.maybeAutoSyncAdmobRevenue());
       }
     } else {
       _isLoading = false;
@@ -59,17 +59,17 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
   Future<void> _checkAuthStatus() async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       var banned = false;
       if (user != null) {
-        banned = await AppwriteService.isUserBanned(user.$id);
+        banned = await BackendService.isUserBanned(user.$id);
       }
       if (user != null && !banned) {
-        unawaited(AppwriteService.validateSessionAndStatus(
+        unawaited(BackendService.validateSessionAndStatus(
           onCompleted: (_, __) {},
         ));
         unawaited(CryptoService.ensureIdentityKeysAndPublish());
-        unawaited(AppwriteService.maybeAutoSyncAdmobRevenue());
+        unawaited(BackendService.maybeAutoSyncAdmobRevenue());
       }
       setState(() {
         _isAuthenticated = user != null && !banned;

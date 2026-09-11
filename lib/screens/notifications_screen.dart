@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,7 +12,7 @@ import '../services/story_manager.dart';
 import 'status_viewer_screen.dart';
 import 'story_publish_screen.dart';
 import '../models/app_notification.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/navigation_service.dart';
 
 class NotificationsScreen extends StatefulWidget {
@@ -342,7 +342,7 @@ class _NotificationsListState extends State<_NotificationsList> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     if (user == null) {
       setState(() {
@@ -351,7 +351,7 @@ class _NotificationsListState extends State<_NotificationsList> {
       });
       return;
     }
-    final items = await AppwriteService.fetchNotifications(user.$id);
+    final items = await BackendService.fetchNotifications(user.$id);
     if (!mounted) return;
     setState(() {
       _notifications = items;
@@ -362,8 +362,8 @@ class _NotificationsListState extends State<_NotificationsList> {
   void _subscribeRealtime() {
     try {
       final channel =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.notificationsCollectionId}.documents';
-      _notificationsSub = AppwriteService.realtime.subscribe([channel]);
+          'databases.${BackendService.databaseId}.collections.${BackendService.notificationsCollectionId}.documents';
+      _notificationsSub = BackendService.realtime.subscribe([channel]);
       _notificationsSub?.stream.listen((event) {
         if (!mounted || event.events.isEmpty) return;
         if (event.events.any((e) =>
@@ -411,7 +411,7 @@ class _NotificationsListState extends State<_NotificationsList> {
                 final icon = _iconForNotification(notification.type);
                 return ListTile(
                   onTap: () async {
-                    await AppwriteService.markNotificationAsRead(
+                    await BackendService.markNotificationAsRead(
                       notification.id,
                     );
                     if (!mounted) return;
@@ -506,9 +506,9 @@ class _NotificationsListState extends State<_NotificationsList> {
             onPressed: _notifications.isEmpty
                 ? null
                 : () async {
-                    final user = await AppwriteService.getCurrentUser();
+                    final user = await BackendService.getCurrentUser();
                     if (user == null) return;
-                    await AppwriteService.markAllNotificationsAsRead(user.$id);
+                    await BackendService.markAllNotificationsAsRead(user.$id);
                     if (!mounted) return;
                     await _load();
                   },

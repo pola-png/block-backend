@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:appwrite/models.dart' as aw;
-import '../services/appwrite_service.dart';
+import 'package:xapzap/models/database_models.dart' as aw;
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 import '../services/profile_cache.dart';
 import '../utils/share_utils.dart';
@@ -58,7 +58,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _load({bool force = false}) async {
     try {
-      final me = await AppwriteService.getCurrentUser();
+      final me = await BackendService.getCurrentUser();
       final id = widget.userId ?? me?.$id;
       if (id == null) return;
       _targetUserId = id;
@@ -88,20 +88,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
           return;
         }
       }
-      final prof = await AppwriteService.getProfileByUserId(id);
+      final prof = await BackendService.getProfileByUserId(id);
       _targetUserId = prof?.data['userId'] as String? ?? id;
       await _syncFollowState();
       // Load counts
-      final followingIds = await AppwriteService.getFollowingUserIds(id);
-      final followersCount = await AppwriteService.getFollowerCount(id);
+      final followingIds = await BackendService.getFollowingUserIds(id);
+      final followersCount = await BackendService.getFollowerCount(id);
       // Load posts for this user
       final aw.RowList postsList =
-          await AppwriteService.fetchPostsByUserIds([id], limit: 50);
+          await BackendService.fetchPostsByUserIds([id], limit: 50);
       final rows = postsList.rows;
 
       // Load repost events for this user (mirror behavior in profile feed)
       final aw.RowList repostsList =
-          await AppwriteService.fetchRepostsByUserIds([id], limit: 50);
+          await BackendService.fetchRepostsByUserIds([id], limit: 50);
       final repostRows = repostsList.rows;
       _mediaByPostId.clear();
       _posts.clear();
@@ -153,7 +153,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _posts.add(
           Post(
             id: d.$id,
-            username: (data['displayName'] as String?)?.trim() ?? '',
+            username: (data['username'] as String?)?.trim() ?? (data['displayName'] as String?)?.trim() ?? '',
             userAvatar: data['userAvatar'] as String? ?? '',
             content: data['content'] as String? ?? '',
             textBgColor: data['textBgColor'] as int?,
@@ -182,8 +182,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final postId = rData['postId'] as String?;
         if (postId == null) continue;
         try {
-          final original = await AppwriteService.getRow(
-              AppwriteService.postsCollectionId, postId);
+          final original = await BackendService.getRow(
+              BackendService.postsCollectionId, postId);
           final data = original.data;
           final List<String> rawMedia = data['mediaUrls'] is List
               ? (data['mediaUrls'] as List).map((e) => e.toString()).toList()
@@ -253,7 +253,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               sourcePostId: postId,
               sourceUserId: _targetUserId,
               sourceUsername:
-                  (_profile?['displayName'] as String?)?.trim() ?? '',
+                  (_profile?['username'] as String?)?.trim() ?? '',
             ),
           );
         } catch (_) {
@@ -265,9 +265,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (prof != null) {
         profileData.addAll(prof.data);
       }
+      // username is always present (required at sign-up); only set displayName fallback if missing
       if (profileData.isEmpty && me != null) {
         profileData['displayName'] = me.name;
-        profileData['username'] = me.name;
       }
 
       // Resolve Bunny/Storage keys for avatar/cover to signed URLs for display.
@@ -313,7 +313,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _joinedAt = entry.joinedAt;
         _loading = false;
       });
-    } catch (_) {
+    } catch (e, stack) {
+      debugPrint('Error in profile loadData: $e');
+      debugPrint(stack.toString());
       if (!mounted) return;
       setState(() => _loading = false);
     }
@@ -330,7 +332,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
     try {
-      final following = await AppwriteService.isFollowing(me, target);
+      final following = await BackendService.isFollowing(me, target);
       if (!mounted) return;
       setState(() {
         _isFollowing = following;
@@ -355,7 +357,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     final displayName = (_profile?['displayName'] as String?)?.trim() ?? '';
-    final username = _profile?['username'] ?? 'user';
+    final username = (_profile?['username'] as String?)?.trim() ?? '';
     final avatar = _profile?['avatarUrl'] as String?;
     final bio = _profile?['bio'] as String?;
     final category = _profile?['category'] as String?;
@@ -419,9 +421,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 delegate: _ProfileTabBarDelegate(
                   theme: theme,
                   tabBar: TabBar(
-                    labelColor: theme.colorScheme.onSurface,
+                    labelColor: theme.colorScheme.primary,
                     unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
                     indicatorColor: theme.colorScheme.primary,
+                    indicatorSize: TabBarIndicatorSize.label,
+                    indicatorWeight: 3,
+                    labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                    indicator: UnderlineTabIndicator(
+                      borderSide: BorderSide(color: theme.colorScheme.primary, width: 3),
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
+                      insets: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
                     tabs: const [
                       Tab(text: 'Posts'),
                       Tab(text: 'Videos'),
@@ -447,18 +458,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _toggleFollow() async {
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null || _targetUserId == null) return;
     try {
       if (_isFollowing) {
-        await AppwriteService.unfollowUser(_targetUserId!);
+        await BackendService.unfollowUser(_targetUserId!);
         if (!mounted) return;
         setState(() {
           _isFollowing = false;
           _followersCount = (_followersCount - 1).clamp(0, 1 << 31);
         });
       } else {
-        await AppwriteService.followUser(_targetUserId!);
+        await BackendService.followUser(_targetUserId!);
         if (!mounted) return;
         setState(() {
           _isFollowing = true;
@@ -482,11 +493,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final targetId =
         _targetUserId ?? _profile?['userId'] as String? ?? widget.userId;
     if (targetId == null || targetId.isEmpty) return;
-    final me = await AppwriteService.getCurrentUser();
+    final me = await BackendService.getCurrentUser();
     if (me == null) return;
     try {
-      final chatId = await AppwriteService.getChatId(me.$id, targetId);
-      final targetProfile = await AppwriteService.getProfileByUserId(targetId);
+      final chatId = await BackendService.getChatId(me.$id, targetId);
+      final targetProfile = await BackendService.getProfileByUserId(targetId);
       final data = targetProfile?.data ?? <String, dynamic>{};
       final displayName = (data['displayName'] as String?)?.trim() ?? '';
       final avatar = (data['avatarUrl'] as String?) ?? '';
@@ -588,7 +599,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               final navigator = Navigator.of(dcontext);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                await AppwriteService.reportProfile(
+                await BackendService.reportProfile(
                   targetUserId,
                   'Inappropriate profile content',
                 );
@@ -716,10 +727,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String? category,
     required String? coverUrl,
   }) {
-    final coverHeight = 190.0;
+    final isDark = theme.brightness == Brightness.dark;
+    final coverHeight = 140.0;
     final joinedLabel = _joinedAt != null ? _formatJoined(_joinedAt!) : null;
-    const coverFallbackStart = Color(0xFF2563EB);
-    const coverFallbackEnd = Color(0xFF7C3AED);
+    final coverFallback = isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0); // slate fallback
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -734,36 +745,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 right: 0,
                 top: 0,
                 height: coverHeight,
-                child: ClipRect(
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(24),
+                  ),
                   child: coverUrl != null && coverUrl.isNotEmpty
                       ? Image.network(
                           coverUrl,
                           fit: BoxFit.cover,
                           errorBuilder: (context, error, stackTrace) =>
                               Container(
-                            decoration: const BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  coverFallbackStart,
-                                  coverFallbackEnd,
-                                ],
-                              ),
-                            ),
+                            color: coverFallback,
                           ),
                         )
                       : Container(
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                coverFallbackStart,
-                                coverFallbackEnd,
-                              ],
-                            ),
-                          ),
+                          color: coverFallback,
                         ),
                 ),
               ),
@@ -805,7 +801,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Text(
                     displayName,
                     style: TextStyle(
-                      fontSize: 22,
+                      fontSize: 18,
                       fontWeight: FontWeight.w800,
                       color: theme.colorScheme.onSurface,
                     ),
@@ -903,6 +899,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildActionButtons(ThemeData theme) {
     Widget? leadingButton;
+    final isDark = theme.brightness == Brightness.dark;
+    
     if (_isCurrentUser) {
       leadingButton = OutlinedButton(
         onPressed: () {
@@ -912,17 +910,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   builder: (_) => const EditProfileScreen(),
                 ),
               )
-              .then((_) => _load());
+              .then((_) => _load(force: true));
         },
         style: OutlinedButton.styleFrom(
           backgroundColor: theme.colorScheme.surface,
           foregroundColor: theme.colorScheme.onSurface,
-          side: BorderSide(color: theme.dividerColor),
+          side: BorderSide(
+            color: isDark ? Colors.white12 : theme.dividerColor.withOpacity(0.5),
+            width: 1,
+          ),
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(999),
+            borderRadius: BorderRadius.circular(14),
           ),
         ),
-        child: const Text('Edit profile'),
+        child: const Text('Edit profile', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
       );
     } else if (_followLoaded) {
       leadingButton = OutlinedButton(
@@ -930,17 +933,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
         style: OutlinedButton.styleFrom(
           backgroundColor: _isFollowing
               ? theme.colorScheme.surface
-              : const Color(0xFF1DA1F2),
+              : const Color(0xFF3B82F6),
           foregroundColor:
               _isFollowing ? theme.colorScheme.onSurface : Colors.white,
           side: _isFollowing
-              ? BorderSide(color: theme.dividerColor)
+              ? BorderSide(color: isDark ? Colors.white12 : theme.dividerColor.withOpacity(0.5))
               : BorderSide.none,
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(vertical: 12),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(999),
+            borderRadius: BorderRadius.circular(14),
           ),
         ),
-        child: Text(_isFollowing ? 'Following' : 'Follow'),
+        child: Text(
+          _isFollowing ? 'Following' : 'Follow',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+        ),
       );
     }
 
@@ -951,20 +959,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
           if (leadingButton != null) Expanded(child: leadingButton),
           if (leadingButton != null) const SizedBox(width: 8),
           if (_isCurrentUser) ...[
-            IconButton(
-              tooltip: 'Share profile',
-              onPressed: _shareProfile,
-              icon: Icon(
-                Icons.share_outlined,
-                color: theme.colorScheme.onSurface,
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isDark ? Colors.white12 : theme.dividerColor.withOpacity(0.5),
+                ),
+              ),
+              child: IconButton(
+                tooltip: 'Share profile',
+                onPressed: _shareProfile,
+                icon: Icon(
+                  Icons.share_outlined,
+                  size: 20,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
             ),
-            IconButton(
-              tooltip: 'Menu',
-              onPressed: _openProfileMenu,
-              icon: Icon(
-                Icons.more_horiz,
-                color: theme.colorScheme.onSurface,
+            const SizedBox(width: 8),
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isDark ? Colors.white12 : theme.dividerColor.withOpacity(0.5),
+                ),
+              ),
+              child: IconButton(
+                tooltip: 'Menu',
+                onPressed: _openProfileMenu,
+                icon: Icon(
+                  Icons.more_horiz,
+                  size: 20,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
             ),
           ] else ...[
@@ -974,20 +1003,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 style: OutlinedButton.styleFrom(
                   backgroundColor: theme.colorScheme.surface,
                   foregroundColor: theme.colorScheme.onSurface,
-                  side: BorderSide(color: theme.dividerColor),
+                  side: BorderSide(
+                    color: isDark ? Colors.white12 : theme.dividerColor.withOpacity(0.5),
+                  ),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
+                    borderRadius: BorderRadius.circular(14),
                   ),
                 ),
-                child: const Text('Message'),
+                child: const Text('Message', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
               ),
             ),
-            IconButton(
-              tooltip: 'More',
-              onPressed: _showProfileActionsMenu,
-              icon: Icon(
-                Icons.more_horiz,
-                color: theme.colorScheme.onSurface,
+            const SizedBox(width: 8),
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isDark ? Colors.white12 : theme.dividerColor.withOpacity(0.5),
+                ),
+              ),
+              child: IconButton(
+                tooltip: 'More',
+                onPressed: _showProfileActionsMenu,
+                icon: Icon(
+                  Icons.more_horiz,
+                  size: 20,
+                  color: theme.colorScheme.onSurface,
+                ),
               ),
             ),
           ],
@@ -1208,8 +1252,17 @@ class _ProfileTabBarDelegate extends SliverPersistentHeaderDelegate {
   @override
   Widget build(
       BuildContext context, double shrinkOffset, bool overlapsContent) {
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      color: theme.colorScheme.surface,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: isDark ? Colors.white10 : theme.dividerColor.withOpacity(0.5),
+            width: 1,
+          ),
+        ),
+      ),
       child: tabBar,
     );
   }

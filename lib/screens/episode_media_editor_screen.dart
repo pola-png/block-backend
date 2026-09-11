@@ -5,7 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 
 import '../models/post.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../services/storage_service.dart';
 
 class EpisodeMediaEditorScreen extends StatefulWidget {
@@ -39,9 +39,9 @@ class _EpisodeMediaEditorScreenState extends State<EpisodeMediaEditorScreen> {
   Future<void> _load() async {
     setState(() => _isLoading = true);
     try {
-      final meta = await AppwriteService.fetchEpisodeMetadata(widget.post.id);
-      final row = await AppwriteService.getRow(
-        AppwriteService.postsCollectionId,
+      final meta = await BackendService.fetchEpisodeMetadata(widget.post.id);
+      final row = await BackendService.getRow(
+        BackendService.postsCollectionId,
         widget.post.id,
       );
       if (!mounted) return;
@@ -121,8 +121,8 @@ class _EpisodeMediaEditorScreenState extends State<EpisodeMediaEditorScreen> {
       final ext = file.path.contains('.') ? file.path.split('.').last : 'mp4';
       final key = 'videos/$_ownerUserId/episode_${widget.post.id}_video.$ext';
       final stored = await StorageService.uploadFileAtPath(file, key);
-      await AppwriteService.updateRow(
-        AppwriteService.postsCollectionId,
+      await BackendService.updateRow(
+        BackendService.postsCollectionId,
         widget.post.id,
         <String, dynamic>{
           'mediaUrls': [stored],
@@ -163,8 +163,8 @@ class _EpisodeMediaEditorScreenState extends State<EpisodeMediaEditorScreen> {
       final ext = file.path.contains('.') ? file.path.split('.').last : 'png';
       final key = 'videos/$_ownerUserId/episode_${widget.post.id}_thumb.$ext';
       final stored = await StorageService.uploadFileAtPath(file, key);
-      await AppwriteService.updateRow(
-        AppwriteService.postsCollectionId,
+      await BackendService.updateRow(
+        BackendService.postsCollectionId,
         widget.post.id,
         <String, dynamic>{
           'thumbnailUrl': stored,
@@ -198,7 +198,7 @@ class _EpisodeMediaEditorScreenState extends State<EpisodeMediaEditorScreen> {
   Future<void> _toggleArchive() async {
     setState(() => _isSaving = true);
     try {
-      await AppwriteService.archivePost(widget.post.id, archived: !_isArchived);
+      await BackendService.archivePost(widget.post.id, archived: !_isArchived);
       if (!mounted) return;
       setState(() => _isArchived = !_isArchived);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -255,7 +255,7 @@ class _EpisodeMediaEditorScreenState extends State<EpisodeMediaEditorScreen> {
           await StorageService.deleteFile(_currentThumbnailPath!);
         } catch (_) {}
       }
-      await AppwriteService.deletePost(widget.post.id);
+      await BackendService.deletePost(widget.post.id);
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } catch (_) {

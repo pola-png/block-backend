@@ -1,6 +1,8 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
-import 'package:appwrite/appwrite.dart' show RealtimeSubscription;
+import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:image_picker/image_picker.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,13 +12,14 @@ import '../screens/notifications_screen.dart';
 import '../screens/profile_screen.dart';
 import '../models/upload_type.dart';
 import '../screens/upload_screen.dart';
-import '../services/appwrite_service.dart';
+import '../services/backend_service.dart';
 import '../screens/search_screen.dart';
 import '../screens/banned_screen.dart';
 import 'dart:async';
 import '../services/push_notification_service.dart';
 import '../models/chat.dart';
 import '../services/chat_message_cache.dart';
+import '../services/ad_gate_service.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -30,6 +33,7 @@ class _MainScreenState extends State<MainScreen> {
 
   int _currentIndex = 0;
   bool _isAuthed = false;
+  bool _showBottomNav = true;
   int _unreadChats = 0;
   int _unreadNotifications = 0;
   RealtimeSubscription? _badgeSub;
@@ -38,6 +42,10 @@ class _MainScreenState extends State<MainScreen> {
   bool _banHandled = false;
   bool _checkedWelcomeIntro = false;
   final ImagePicker _picker = ImagePicker();
+
+  // Ad gate: periodic timer + nav-switch counter
+  Timer? _interstitialTimer;
+  int _navSwitchCount = 0;
 
   final List<Widget> _screens = [
     const HomeScreen(),
@@ -56,7 +64,15 @@ class _MainScreenState extends State<MainScreen> {
     _subscribeBanWatcher();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybeShowWelcomeIntro();
+      _maybeShowCheaterAlert();
       _initializeNotifications();
+    });
+
+    // 1-minute periodic interstitial ad timer
+    _interstitialTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(XapZapAdGateService.instance.showInterstitialAd(
+        placement: 'periodic_timer',
+      ));
     });
   }
 
@@ -88,8 +104,100 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  Future<void> _maybeShowCheaterAlert() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return;
+
+      final res = await Supabase.instance.client
+          .from('profiles')
+          .select('is_cheater, cheater_alert_shown, cheater_penalty_amount, cheater_penalty_reason')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (res != null &&
+          res['is_cheater'] == true &&
+          res['cheater_alert_shown'] != true &&
+          mounted) {
+        final reason = res['cheater_penalty_reason'] as String? ?? 'Suspicious/fake task completions.';
+        final double deduction = (res['cheater_penalty_amount'] as num?)?.toDouble() ?? 0.0;
+
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogCtx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.red, size: 28),
+                SizedBox(width: 8),
+                Text('Warning: System Alert', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Suspicious Activity Detected',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.redAccent),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Our anti-fraud system has flaggged fake task completions on your account. As a result, a penalty deduction has been applied to your balance.',
+                  style: TextStyle(height: 1.4),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.red.withOpacity(0.2)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Deduction Penalty: -\$${deduction.toStringAsFixed(2)}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Reason: $reason',
+                        style: const TextStyle(fontSize: 12, height: 1.3),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Please perform tasks honestly. Future violations will result in permanent account suspension.',
+                  style: TextStyle(fontSize: 11, color: Colors.grey, height: 1.3),
+                ),
+              ],
+            ),
+            actions: [
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () async {
+                  Navigator.of(dialogCtx).pop();
+                  await BackendService.clearCheaterAlert(user.id);
+                },
+                child: const Text('I Understand', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading cheating alert status: $e');
+    }
+  }
+
   Future<void> _checkAuth() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (!mounted) return;
     if (user == null) {
       setState(() {
@@ -100,7 +208,7 @@ class _MainScreenState extends State<MainScreen> {
     }
     String? avatar;
     try {
-      final profile = await AppwriteService.getProfileByUserId(user.$id);
+      final profile = await BackendService.getProfileByUserId(user.$id);
       avatar = profile?.data['avatarUrl'] as String?;
     } catch (_) {}
     if (!mounted) return;
@@ -197,66 +305,110 @@ class _MainScreenState extends State<MainScreen> {
                   ],
                 )
               : null,
-          // Keep all tab screens alive using an IndexedStack so that
-          // Home, Chats, Updates and Profile preserve their state and
-          // do not rebuild when switching tabs.
-          body: IndexedStack(index: _currentIndex, children: _screens),
+          body: NotificationListener<UserScrollNotification>(
+            onNotification: (notification) {
+              if (notification.direction == ScrollDirection.reverse) {
+                if (_showBottomNav) {
+                  setState(() {
+                    _showBottomNav = false;
+                  });
+                }
+              } else if (notification.direction == ScrollDirection.forward) {
+                if (!_showBottomNav) {
+                  setState(() {
+                    _showBottomNav = true;
+                  });
+                }
+              }
+              return false;
+            },
+            child: IndexedStack(index: _currentIndex, children: _screens),
+          ),
           bottomNavigationBar: isDesktop
               ? null
-              : ClipRect(
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface.withOpacity(0.85),
-                        border: Border(
-                          top: BorderSide(
-                            color: Theme.of(context).brightness == Brightness.light
-                                ? Colors.black.withOpacity(0.08)
-                                : Colors.white.withOpacity(0.12),
-                            width: 0.8,
-                          ),
-                        ),
-                      ),
-                      child: SafeArea(
-                        top: false,
-                        child: SizedBox(
-                          height: 68,
-                          child: Stack(
-                            children: [
-                              _buildAnimatedIndicator(constraints.maxWidth),
-                              Row(
-                                children: [
-                                  Expanded(child: Center(child: _buildNavItem(0, LucideIcons.home, null))),
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildNavItem(
-                                        1,
-                                        LucideIcons.messageCircle,
-                                        _unreadChats > 0 ? '$_unreadChats' : null,
-                                      ),
-                                    ),
-                                  ),
-                                  Expanded(child: Center(child: _buildNavItem(2, LucideIcons.plusSquare, null))),
-                                  Expanded(
-                                    child: Center(
-                                      child: _buildNavItem(
-                                        3,
-                                        LucideIcons.bell,
-                                        _unreadNotifications > 0
-                                            ? '$_unreadNotifications'
-                                            : null,
-                                      ),
-                                    ),
-                                  ),
-                                  Expanded(child: Center(child: _buildNavItem(4, LucideIcons.user, null))),
-                                ],
+              : AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeInOut,
+                  height: _showBottomNav
+                      ? 68.0 + MediaQuery.of(context).padding.bottom
+                      : 0.0,
+                  clipBehavior: Clip.hardEdge,
+                  decoration: const BoxDecoration(),
+                  child: Wrap(
+                    children: [
+                      ClipRect(
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surface
+                                  .withOpacity(0.85),
+                              border: Border(
+                                top: BorderSide(
+                                  color: Theme.of(context).brightness ==
+                                          Brightness.light
+                                      ? Colors.black.withOpacity(0.08)
+                                      : Colors.white.withOpacity(0.12),
+                                  width: 0.8,
+                                ),
                               ),
-                            ],
+                            ),
+                            child: SafeArea(
+                              top: false,
+                              child: SizedBox(
+                                height: 68,
+                                child: Stack(
+                                  children: [
+                                    _buildAnimatedIndicator(
+                                        constraints.maxWidth),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                            child: Center(
+                                                child: _buildNavItem(
+                                                    0, LucideIcons.home, null))),
+                                        Expanded(
+                                          child: Center(
+                                            child: _buildNavItem(
+                                              1,
+                                              LucideIcons.messageCircle,
+                                              _unreadChats > 0
+                                                  ? '$_unreadChats'
+                                                  : null,
+                                            ),
+                                          ),
+                                        ),
+                                        Expanded(
+                                            child: Center(
+                                                child: _buildNavItem(2,
+                                                    LucideIcons.plusSquare, null))),
+                                        Expanded(
+                                          child: Center(
+                                            child: _buildNavItem(
+                                              3,
+                                              LucideIcons.bell,
+                                              _unreadNotifications > 0
+                                                  ? '$_unreadNotifications'
+                                                  : null,
+                                            ),
+                                          ),
+                                        ),
+                                        Expanded(
+                                            child: Center(
+                                                child: _buildNavItem(
+                                                    4, LucideIcons.user, null))),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
                 ),
         );
@@ -342,7 +494,17 @@ class _MainScreenState extends State<MainScreen> {
         if (!_isAuthed && index != 0) {
           return;
         }
-        setState(() => _currentIndex = index);
+        // Trigger navigation interstitial ad on every tab switch
+        _navSwitchCount++;
+        if (_navSwitchCount % 2 == 0) {
+          unawaited(XapZapAdGateService.instance.showInterstitialAd(
+            placement: 'bottom_nav_switch',
+          ));
+        }
+        setState(() {
+          _currentIndex = index;
+          _showBottomNav = true;
+        });
       },
       child: Container(
         color: Colors.transparent,
@@ -570,10 +732,10 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _loadBadges() async {
-    final user = await AppwriteService.getCurrentUser();
+    final user = await BackendService.getCurrentUser();
     if (user == null) return;
     try {
-      final chats = await AppwriteService.fetchChatsForUser(user.$id);
+      final chats = await BackendService.fetchChatsForUser(user.$id);
       int unreadChatCount = 0;
       for (final chatRow in chats.rows) {
         final chatId = chatRow.$id;
@@ -586,7 +748,7 @@ class _MainScreenState extends State<MainScreen> {
             unreadChatCount++;
           }
         } else {
-          final msgs = await AppwriteService.fetchMessagesForChat(
+          final msgs = await BackendService.fetchMessagesForChat(
             chatId,
             limit: 10,
           );
@@ -604,7 +766,7 @@ class _MainScreenState extends State<MainScreen> {
           }
         }
       }
-      final notifs = await AppwriteService.fetchNotifications(
+      final notifs = await BackendService.fetchNotifications(
         user.$id,
         limit: 50,
       );
@@ -621,10 +783,10 @@ class _MainScreenState extends State<MainScreen> {
   void _subscribeBadges() {
     try {
       final channelMessages =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.messagesCollectionId}.documents';
+          'databases.${BackendService.databaseId}.collections.${BackendService.messagesCollectionId}.documents';
       final channelNotifs =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.notificationsCollectionId}.documents';
-      _badgeSub = AppwriteService.realtime.subscribe([
+          'databases.${BackendService.databaseId}.collections.${BackendService.notificationsCollectionId}.documents';
+      _badgeSub = BackendService.realtime.subscribe([
         channelMessages,
         channelNotifs,
       ]);
@@ -637,7 +799,7 @@ class _MainScreenState extends State<MainScreen> {
           final chatId = (payload['chatId'] as String?)?.trim() ?? '';
           if (chatId.isNotEmpty) {
             final senderId = (payload['senderId'] as String?) ?? '';
-            final user = await AppwriteService.getCurrentUser();
+            final user = await BackendService.getCurrentUser();
             if (user != null) {
               final readBy = payload['readBy'] is List
                   ? (payload['readBy'] as List).map((e) => e.toString().trim()).toList()
@@ -674,19 +836,19 @@ class _MainScreenState extends State<MainScreen> {
 
   void _subscribeBanWatcher() async {
     try {
-      final user = await AppwriteService.getCurrentUser();
+      final user = await BackendService.getCurrentUser();
       if (user == null) return;
       final channelProfile =
-          'databases.${AppwriteService.databaseId}.collections.${AppwriteService.profilesCollectionId}.documents.${user.$id}';
-      _banSub = AppwriteService.realtime.subscribe([channelProfile]);
+          'databases.${BackendService.databaseId}.collections.${BackendService.profilesCollectionId}.documents.${user.$id}';
+      _banSub = BackendService.realtime.subscribe([channelProfile]);
       _banSub?.stream.listen((event) async {
         if (!mounted || _banHandled) return;
         // Any change to the profile should re-check ban status.
-        final banned = await AppwriteService.isUserBanned(user.$id);
+        final banned = await BackendService.isUserBanned(user.$id);
         if (!banned) return;
         _banHandled = true;
         try {
-          await AppwriteService.signOut();
+          await BackendService.signOut();
         } catch (_) {}
         if (!mounted) return;
         // Kick the user out of the app and show banned screen.
@@ -700,6 +862,7 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   void dispose() {
+    _interstitialTimer?.cancel();
     _badgeSub?.close();
     _banSub?.close();
     super.dispose();
@@ -718,6 +881,17 @@ class _WelcomeIntroDialogState extends State<_WelcomeIntroDialog> {
   int _pageIndex = 0;
 
   static const List<_WelcomePageData> _pages = [
+    _WelcomePageData(
+      icon: LucideIcons.checkSquare,
+      title: 'Micro Jobs',
+      body: 'Complete simple tasks like watching videos or reviewing the app, and get rewarded instantly.',
+      bullets: [
+        'Repeatable Video Tasks: Earn \$0.02 - \$0.05 per video watch',
+        'App Review Reward: Earn \$0.20 for reviewing the app',
+        'Instant Pay: Earn directly into your balance immediately',
+        'Unlimited Tasks: Complete as many video watches as you want',
+      ],
+    ),
     _WelcomePageData(
       icon: LucideIcons.flame,
       title: 'Creators Earn Daily',
