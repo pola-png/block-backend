@@ -8,7 +8,8 @@ import '../services/micro_job_service.dart';
 
 class VisitWebsiteWebviewScreen extends StatefulWidget {
   final String url;
-  const VisitWebsiteWebviewScreen({super.key, required this.url});
+  final double rewardAmount;
+  const VisitWebsiteWebviewScreen({super.key, required this.url, this.rewardAmount = 0.20});
 
   @override
   State<VisitWebsiteWebviewScreen> createState() => _VisitWebsiteWebviewScreenState();
@@ -92,7 +93,11 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
     });
 
     final taskId = 'visit_website_${widget.url.hashCode}';
-    final success = await MicroJobService.rewardUser(taskId, 0.20);
+    final mod = widget.url.hashCode.abs() % 10;
+    final calcVal = double.parse((0.20 + (mod * 0.033)).clamp(0.20, 0.50).toStringAsFixed(2));
+    final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : calcVal;
+
+    final success = await MicroJobService.rewardUser(taskId, reward);
 
     if (!mounted) return;
     if (success) {
@@ -107,7 +112,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
               Text('Task Completed!'),
             ],
           ),
-          content: const Text('You have successfully completed this website visit. A reward of \$0.20 has been added to your balance.'),
+          content: Text('You have successfully completed this website visit. A reward of \$${reward.toStringAsFixed(2)} has been added to your balance.'),
           actions: [
             TextButton(
               onPressed: () {
@@ -184,7 +189,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
               child: Text(
                 _completed
                     ? '🎉 Reward earned! You can now go back.'
-                    : '⏳ Keep browsing for $_secondsRemaining seconds to earn \$0.20',
+                    : '⏳ Keep browsing for $_secondsRemaining seconds to earn \$${(widget.rewardAmount > 0.20 ? widget.rewardAmount : double.parse((0.20 + ((widget.url.hashCode.abs() % 10) * 0.033)).clamp(0.20, 0.50).toStringAsFixed(2))).toStringAsFixed(2)}',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ),

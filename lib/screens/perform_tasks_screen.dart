@@ -259,6 +259,12 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
     }
   }
 
+  double _getRewardForWebsiteTask(String url) {
+    final mod = url.hashCode.abs() % 10;
+    final val = 0.20 + (mod * 0.033);
+    return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
+  }
+
   Future<void> _completeAppReviewFlow() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -776,9 +782,9 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                         mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          const Text(
-                            '+\$0.20',
-                            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 14),
+                          Text(
+                            '+\$${_getRewardForWebsiteTask(url).toStringAsFixed(2)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 14),
                           ),
                           const SizedBox(height: 4),
                           if (isCompleted)
@@ -794,7 +800,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                             const Icon(Icons.arrow_forward_ios, size: 12),
                         ],
                       ),
-                      onTap: () {
+                      onTap: () async {
                         if (!isUnlocked) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -832,6 +838,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                             builder: (context) => VisitWebsiteGatewayScreen(
                               url: url,
                               isDirect: _websiteTasksDirectMap[url] ?? false,
+                              rewardAmount: _getRewardForWebsiteTask(url),
                             ),
                           ),
                         ).then((_) => _loadStateAndJobs());

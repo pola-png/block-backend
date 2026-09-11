@@ -7,10 +7,22 @@ import '../services/ad_gate_service.dart';
 import '../services/micro_job_service.dart';
 import 'visit_website_webview_screen.dart';
 
+double getRewardForWebsiteTask(String url) {
+  final mod = url.hashCode.abs() % 10;
+  final val = 0.20 + (mod * 0.033);
+  return double.parse(val.clamp(0.20, 0.50).toStringAsFixed(2));
+}
+
 class VisitWebsiteGatewayScreen extends StatefulWidget {
   final String url;
   final bool isDirect;
-  const VisitWebsiteGatewayScreen({super.key, required this.url, this.isDirect = false});
+  final double rewardAmount;
+  const VisitWebsiteGatewayScreen({
+    super.key,
+    required this.url,
+    this.isDirect = false,
+    this.rewardAmount = 0.20,
+  });
 
   @override
   State<VisitWebsiteGatewayScreen> createState() => _VisitWebsiteGatewayScreenState();
@@ -193,34 +205,37 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                                     final uri = Uri.parse(widget.url);
                                     await launchUrl(uri, mode: LaunchMode.externalApplication);
                                     // Credit reward
-                                     await MicroJobService.rewardUser('visit_website_${widget.url.hashCode}', 0.20);
+                                     final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
+                                     await MicroJobService.rewardUser('visit_website_${widget.url.hashCode}', reward);
                                      if (mounted) {
                                        ScaffoldMessenger.of(context).showSnackBar(
-                                         const SnackBar(content: Text('🎉 \$0.20 reward credited!'), backgroundColor: Colors.green),
+                                         SnackBar(content: Text('🎉 \$${reward.toStringAsFixed(2)} reward credited!'), backgroundColor: Colors.green),
                                        );
-                                      Navigator.pop(context);
-                                    }
-                                  } catch (e) {
-                                    debugPrint('Could not launch URL directly: $e');
-                                    // Fallback to embedded WebView if launch fails
-                                    if (mounted) {
-                                      Navigator.pushReplacement(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) => VisitWebsiteWebviewScreen(url: widget.url),
-                                        ),
-                                      );
-                                    }
-                                  }
-                                } else {
-                                  // Navigate to WebView and pop this gateway screen
-                                  Navigator.pushReplacement(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => VisitWebsiteWebviewScreen(url: widget.url),
-                                    ),
-                                  );
-                                }
+                                       Navigator.pop(context);
+                                     }
+                                   } catch (e) {
+                                     debugPrint('Could not launch URL directly: $e');
+                                     // Fallback to embedded WebView if launch fails
+                                     if (mounted) {
+                                       final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
+                                       Navigator.pushReplacement(
+                                         context,
+                                         MaterialPageRoute(
+                                           builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
+                                         ),
+                                       );
+                                     }
+                                   }
+                                 } else {
+                                   // Navigate to WebView and pop this gateway screen
+                                   final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
+                                   Navigator.pushReplacement(
+                                     context,
+                                     MaterialPageRoute(
+                                       builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
+                                     ),
+                                   );
+                                 }
                               }
                             : null,
                         child: const Text(
