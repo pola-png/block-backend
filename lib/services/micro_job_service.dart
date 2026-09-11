@@ -136,6 +136,46 @@ class MicroJobService {
     }
   }
 
+  // Reward a target user directly by userId (e.g. for referrals)
+  static Future<bool> rewardUserDirectly(String userId, double rewardAmount) async {
+    try {
+      final balanceRow = await BackendService.getLatestCreatorBalance(userId);
+      if (balanceRow != null) {
+        final data = balanceRow.data as Map<String, dynamic>;
+        final currentBalVal = data['balanceUsd'] ?? 0.0;
+        final currentAvailVal = data['availableBalanceUsd'] ?? 0.0;
+        
+        final double currentBal = currentBalVal is num ? currentBalVal.toDouble() : (double.tryParse(currentBalVal.toString()) ?? 0.0);
+        final double currentAvail = currentAvailVal is num ? currentAvailVal.toDouble() : (double.tryParse(currentAvailVal.toString()) ?? 0.0);
+
+        final newBal = currentBal + rewardAmount;
+        final newAvail = currentAvail + rewardAmount;
+
+        await BackendService.updateRow(
+          BackendService.creatorBalancesCollectionId,
+          balanceRow.$id,
+          {
+            'balanceUsd': newBal,
+            'availableBalanceUsd': newAvail,
+          },
+        );
+      } else {
+        await BackendService.createDocument(
+          BackendService.creatorBalancesCollectionId,
+          {
+            'creatorId': userId,
+            'balanceUsd': rewardAmount,
+            'availableBalanceUsd': rewardAmount,
+          },
+        );
+      }
+      return true;
+    } catch (e) {
+      debugPrint('Failed to reward user directly: $e');
+      return false;
+    }
+  }
+
   static Future<List<Post>> fetchAdminVideos() async {
     final List<Post> combinedVideos = [];
 
