@@ -198,14 +198,22 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: _canProceed
-                            ? () {
+                            ? () async {
                                 final reward = widget.rewardAmount > 0.20 ? widget.rewardAmount : getRewardForWebsiteTask(widget.url);
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
-                                  ),
-                                );
+                                final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
+                                try {
+                                  await launchUrl(Uri.parse(cleanUrl), mode: LaunchMode.externalApplication);
+                                } catch (e) {
+                                  debugPrint('Error launching external application: $e');
+                                }
+                                if (mounted) {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => VisitWebsiteWebviewScreen(url: widget.url, rewardAmount: reward),
+                                    ),
+                                  );
+                                }
                               }
                             : null,
                         child: const Text(

@@ -35,16 +35,17 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
   }
 
   void _openInExternalBrowser() async {
+    final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
+    final uri = Uri.parse(cleanUrl);
     try {
-      final cleanUrl = widget.url.startsWith('http') ? widget.url : 'https://${widget.url}';
-      final uri = Uri.parse(cleanUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
-      }
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
-      debugPrint('Could not launch URL in external browser: $e');
+      debugPrint('Could not launch external application: $e');
+      try {
+        await launchUrl(uri, mode: LaunchMode.platformDefault);
+      } catch (e2) {
+        debugPrint('Fallback launch error: $e2');
+      }
     }
   }
 
