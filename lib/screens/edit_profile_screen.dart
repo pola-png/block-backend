@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -335,7 +336,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 )
               : (_avatarUrl != null
                   ? DecorationImage(
-                      image: NetworkImage(_avatarUrl!),
+                      image: CachedNetworkImageProvider(_avatarUrl!),
                       fit: BoxFit.cover,
                     )
                   : null),

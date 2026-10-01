@@ -1,12 +1,13 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:video_player/video_player.dart';
 
 import '../models/upload_type.dart';
 import '../services/pending_upload_service.dart';
 import '../services/backend_service.dart';
+import '../services/user_plan_service.dart';
 
 enum _VideoUploadStep { preview, details }
 
@@ -212,6 +213,14 @@ class _UploadScreenState extends State<UploadScreen> {
   Future<void> _openInitialVideoPicker() async {
     if (_hasAttemptedInitialVideoPick || !mounted) return;
     _hasAttemptedInitialVideoPick = true;
+    final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+      context,
+      mediaType: 'videos',
+    );
+    if (!allowed || !mounted) {
+      Navigator.of(context).maybePop();
+      return;
+    }
     await _pickVideo();
     if (!mounted || _selectedVideo != null) return;
     Navigator.of(context).maybePop();
@@ -1038,6 +1047,11 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Future<void> _pickFromGallery() async {
+    final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+      context,
+      mediaType: 'images',
+    );
+    if (!allowed || !mounted) return;
     final List<XFile> images = await _picker.pickMultiImage();
     if (images.isNotEmpty) {
       setState(() {
@@ -1128,6 +1142,11 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Future<void> _pickVideo() async {
+    final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+      context,
+      mediaType: 'videos',
+    );
+    if (!allowed || !mounted) return;
     final XFile? video = await _picker.pickVideo(source: ImageSource.gallery);
     if (video == null) return;
     await _applyPickedVideo(video);
@@ -1229,6 +1248,13 @@ class _UploadScreenState extends State<UploadScreen> {
 
   Future<void> _createPost() async {
     if (_isPosting) return;
+    if (_selectedMedia.isNotEmpty || _selectedVideo != null) {
+      final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+        context,
+        mediaType: _selectedVideo != null ? 'videos' : 'images',
+      );
+      if (!allowed || !mounted) return;
+    }
     if (_containsBannedText()) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

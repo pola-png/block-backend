@@ -5,6 +5,9 @@ import '../services/ad_helper.dart';
 import '../services/ad_revenue_service.dart';
 import 'rewarded_ad_preload_service.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 class XapZapAdGateService {
   static final XapZapAdGateService instance = XapZapAdGateService._();
 
@@ -22,27 +25,83 @@ class XapZapAdGateService {
   Completer<void>? _interstitialCompleter;
   Completer<void>? _rewardedInterstitialCompleter;
 
+  Future<bool> isAdFreeActive() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final expiry = prefs.getInt('ad_free_expiry_timestamp') ?? 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (expiry > now) {
+        return true;
+      }
+
+      // Authoritative verification against Supabase user profile
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user != null) {
+        final profileRes = await Supabase.instance.client
+            .from('profiles')
+            .select('ad_free_expiry')
+            .eq('id', user.id)
+            .maybeSingle();
+
+        if (profileRes != null && profileRes['ad_free_expiry'] != null) {
+          final dbExpiryStr = profileRes['ad_free_expiry'] as String;
+          final dbExpiryDt = DateTime.tryParse(dbExpiryStr);
+          if (dbExpiryDt != null && dbExpiryDt.millisecondsSinceEpoch > now) {
+            final dbExpiryTs = dbExpiryDt.millisecondsSinceEpoch;
+            await prefs.setInt('ad_free_expiry_timestamp', dbExpiryTs);
+            return true;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[AdGate] Error checking real ad-free status: $e');
+    }
+    return false;
+  }
+
   // Initialize and trigger initial load
   Future<void> init() async {
     if (kIsWeb) return;
     
     // Start preloading all
-    final appOpenFuture = preloadAppOpenAd();
+    preloadAppOpenAd();
     preloadInterstitialAd();
     preloadRewardedInterstitialAd();
-
-    // Await the app open ad with a short timeout during initialization
-    try {
-      await appOpenFuture.timeout(const Duration(milliseconds: 2500));
-    } catch (e) {
-      debugPrint('[AdGate] Initial App Open Ad load timed out: $e');
-    }
   }
 
   void preloadAll() {
     preloadAppOpenAd();
     preloadInterstitialAd();
     preloadRewardedInterstitialAd();
+  }
+
+  bool _pendingShowOnLoad = false;
+
+  void _showLoadedAppOpenAd(AppOpenAd ad, {String placement = 'app_launch_cold_start'}) {
+    _pendingShowOnLoad = false;
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (a) {
+        markPopUpAdShown();
+        a.dispose();
+        _appOpenAd = null;
+        preloadAppOpenAd(); // preload next one immediately
+      },
+      onAdFailedToShowFullScreenContent: (a, error) {
+        a.dispose();
+        _appOpenAd = null;
+        preloadAppOpenAd();
+      },
+    );
+
+    ad.onPaidEvent = AdRevenueService.paidEventHandler(
+      adUnitId: AdHelper.appOpen,
+      format: 'appopen',
+      placement: placement,
+    );
+
+    markPopUpAdShown();
+    debugPrint('[AdGate] Displaying App Open Ad now (placement: $placement, unit: ${AdHelper.appOpen})...');
+    ad.show();
   }
 
   // PRELOAD APP OPEN AD
@@ -63,15 +122,19 @@ class XapZapAdGateService {
         onAdLoaded: (ad) {
           _appOpenAd = ad;
           _isAppOpenAdLoading = false;
-          debugPrint('[AdGate] App Open Ad loaded successfully.');
+          debugPrint('[AdGate] App Open Ad loaded successfully for unit: ${AdHelper.appOpen}');
           if (_appOpenCompleter != null && !_appOpenCompleter!.isCompleted) {
             _appOpenCompleter!.complete();
+          }
+          if (_pendingShowOnLoad && !isPopUpAdOnCooldown()) {
+            _showLoadedAppOpenAd(ad);
           }
         },
         onAdFailedToLoad: (error) {
           _isAppOpenAdLoading = false;
           _appOpenAd = null;
-          debugPrint('[AdGate] App Open Ad failed to load: $error');
+          _pendingShowOnLoad = false;
+          debugPrint('[AdGate] App Open Ad failed to load (code: ${error.code}, message: "${error.message}", domain: ${error.domain}) for unit: ${AdHelper.appOpen}');
           if (_appOpenCompleter != null && !_appOpenCompleter!.isCompleted) {
             _appOpenCompleter!.complete();
           }
@@ -170,47 +233,46 @@ class XapZapAdGateService {
   }
 
   // SHOW APP OPEN AD — rate-limited to 5 minutes between pop-ups
-  void showAppOpenAdIfAvailable() {
+  Future<void> showAppOpenAdIfAvailable({bool isForegroundResume = false}) async {
     if (kIsWeb) return;
+
+    if (await isAdFreeActive()) {
+      debugPrint('[AdGate] App Open Ad suppressed: User has active Ad-Free plan.');
+      return;
+    }
 
     if (isPopUpAdOnCooldown()) {
       debugPrint('[AdGate] App Open Ad suppressed: 5-minute popup cooldown active.');
       return;
     }
 
-    if (_appOpenAd == null) {
-      debugPrint('[AdGate] App Open Ad not loaded yet. Attempting to fetch.');
-      preloadAppOpenAd();
+    final placement = isForegroundResume ? 'app_foreground_resume' : 'app_launch_cold_start';
+
+    // 1. If ad is already in memory, display immediately
+    if (_appOpenAd != null) {
+      debugPrint('[AdGate] App Open Ad is cached. Presenting immediately...');
+      _showLoadedAppOpenAd(_appOpenAd!, placement: placement);
       return;
     }
 
-    _appOpenAd!.fullScreenContentCallback = FullScreenContentCallback(
-      onAdDismissedFullScreenContent: (ad) {
-        markPopUpAdShown();
-        ad.dispose();
-        _appOpenAd = null;
-        preloadAppOpenAd(); // preload next one immediately
-      },
-      onAdFailedToShowFullScreenContent: (ad, error) {
-        ad.dispose();
-        _appOpenAd = null;
-        preloadAppOpenAd();
-      },
-    );
-
-    _appOpenAd!.onPaidEvent = AdRevenueService.paidEventHandler(
-      adUnitId: AdHelper.appOpen,
-      format: 'appopen',
-      placement: 'app_launch_resume',
-    );
-
-    markPopUpAdShown();
-    _appOpenAd!.show();
+    // 2. Set pending auto-show flag and trigger load
+    _pendingShowOnLoad = true;
+    debugPrint('[AdGate] App Open Ad not cached. Awaiting network fetch from AdMob...');
+    try {
+      await preloadAppOpenAd().timeout(const Duration(seconds: 12));
+    } catch (e) {
+      debugPrint('[AdGate] App Open Ad fetch ongoing in background: $e');
+    }
   }
 
   // SHOW INTERSTITIAL AD (WITH REWARDED INTERSTITIAL FALLBACK) — rate-limited to 5 minutes
   Future<bool> showInterstitialAd({String placement = 'general'}) async {
     if (kIsWeb) return false;
+
+    if (await isAdFreeActive()) {
+      debugPrint('[AdGate] Interstitial Ad suppressed ($placement): User has active Ad-Free plan.');
+      return false;
+    }
 
     if (isPopUpAdOnCooldown()) {
       debugPrint('[AdGate] Interstitial Ad suppressed ($placement): 5-minute popup cooldown active.');
@@ -315,7 +377,9 @@ class XapZapAdGateService {
     final completer = Completer<bool>();
 
     // 1. Try preloaded ad first
-    final preloadedAd = RewardedAdPreloadService.takeForUnit(AdHelper.rewardedReelsUnit);
+    final unitId = AdHelper.rewarded;
+    final preloadedAd = RewardedAdPreloadService.takeForUnit(unitId) ??
+        RewardedAdPreloadService.takeForUnit(AdHelper.rewardedReelsUnit);
     if (preloadedAd != null) {
       bool earned = false;
       preloadedAd.fullScreenContentCallback = FullScreenContentCallback(
@@ -338,7 +402,7 @@ class XapZapAdGateService {
 
     // 2. Load on-demand rewarded ad
     RewardedAd.load(
-      adUnitId: AdHelper.rewardedReelsUnit,
+      adUnitId: unitId,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
@@ -361,7 +425,7 @@ class XapZapAdGateService {
         },
         onAdFailedToLoad: (error) {
           debugPrint('[AdGate] Rewarded Ad failed to load ($placement): $error');
-          if (!completer.isCompleted) completer.complete(true); // Don't block user if ad load fails
+          if (!completer.isCompleted) completer.complete(false);
         },
       ),
     );

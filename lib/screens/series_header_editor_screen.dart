@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../services/backend_service.dart';
@@ -267,7 +268,7 @@ class _HeaderPreview extends StatelessWidget {
         color: theme.colorScheme.surfaceContainerHighest,
         image: coverUrl != null && coverUrl!.isNotEmpty
             ? DecorationImage(
-                image: NetworkImage(coverUrl!),
+                image: CachedNetworkImageProvider(coverUrl!),
                 fit: BoxFit.cover,
               )
             : null,

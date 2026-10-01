@@ -1,5 +1,6 @@
 import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../models/post.dart';
 import '../services/backend_service.dart';
@@ -178,7 +179,7 @@ class _SeriesPageScreenState extends State<SeriesPageScreen> {
                     color: theme.colorScheme.surfaceContainerHighest,
                     image: headerCover != null && headerCover.isNotEmpty
                         ? DecorationImage(
-                            image: NetworkImage(headerCover),
+                            image: CachedNetworkImageProvider(headerCover),
                             fit: BoxFit.cover,
                           )
                         : null,
@@ -272,9 +273,18 @@ class _SeriesPageScreenState extends State<SeriesPageScreen> {
                                 height: 108,
                                 child: item.post.thumbnailUrl != null &&
                                         item.post.thumbnailUrl!.isNotEmpty
-                                    ? Image.network(
-                                        item.post.thumbnailUrl!,
+                                    ? CachedNetworkImage(
+                                        imageUrl: item.post.thumbnailUrl!,
                                         fit: BoxFit.cover,
+                                        errorWidget: (context, url, error) => Container(
+                                          color: theme.colorScheme
+                                              .surfaceContainerHighest,
+                                          alignment: Alignment.center,
+                                          child: const Icon(
+                                            Icons.play_circle_fill_rounded,
+                                            size: 28,
+                                          ),
+                                        ),
                                       )
                                     : Container(
                                         color: theme.colorScheme

@@ -1,7 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import 'package:xapzap/models/database_models.dart' as aw;
 import '../models/chat.dart';
@@ -618,10 +619,10 @@ class _ChatScreenState extends State<ChatScreen>
       ),
       clipBehavior: Clip.antiAlias,
       child: hasAvatar
-          ? Image.network(
-              trimmed,
+          ? CachedNetworkImage(
+              imageUrl: trimmed,
               fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) =>
+              errorWidget: (context, url, error) =>
                   const SizedBox.shrink(),
             )
           : const SizedBox.shrink(),

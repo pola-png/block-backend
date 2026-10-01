@@ -1,5 +1,6 @@
 import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../models/post.dart';
 import '../models/upload_type.dart';
@@ -536,7 +537,18 @@ class _EpisodeThumb extends StatelessWidget {
         width: 82,
         height: 102,
         child: url != null && url!.isNotEmpty
-            ? Image.network(url!, fit: BoxFit.cover)
+            ? CachedNetworkImage(
+                imageUrl: url!,
+                fit: BoxFit.cover,
+                errorWidget: (context, url, error) => Container(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withOpacity(0.7),
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.play_circle_fill_rounded, size: 28),
+                ),
+              )
             : Container(
                 color: Theme.of(context)
                     .colorScheme

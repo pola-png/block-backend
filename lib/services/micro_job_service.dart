@@ -41,28 +41,59 @@ class MicroJobService {
     return true;
   }
 
-  // Reloads user balance and updates userBalanceNotifier
-  static Future<void> reloadUserBalance() async {
-    final user = await BackendService.getCurrentUser();
-    if (user == null) {
-      userBalanceNotifier.value = 0.0;
+  static Future<String?> _resolveCurrentUserId() async {
+    final supaUid = Supabase.instance.client.auth.currentUser?.id;
+    if (supaUid != null && supaUid.isNotEmpty) return supaUid;
+    final backendUser = await BackendService.getCurrentUser();
+    return backendUser?.$id;
+  }
+
+  static DateTime? _lastBalanceFetchTime;
+  static bool _isReloading = false;
+
+  // Reloads user balance and updates userBalanceNotifier via Supabase with throttling
+  static Future<void> reloadUserBalance({bool force = false}) async {
+    if (_isReloading) return;
+    final now = DateTime.now();
+    if (!force && _lastBalanceFetchTime != null && now.difference(_lastBalanceFetchTime!).inSeconds < 30) {
       return;
     }
-    final balanceRow = await BackendService.getLatestCreatorBalance(user.$id);
-    if (balanceRow != null) {
-      final data = balanceRow.data as Map<String, dynamic>;
-      final val = data['balanceUsd'] ?? data['availableBalanceUsd'] ?? 0.0;
-      if (val is num) {
-        userBalanceNotifier.value = val.toDouble();
-      } else {
-        userBalanceNotifier.value = double.tryParse(val.toString()) ?? 0.0;
+    _isReloading = true;
+    double resolvedBalance = userBalanceNotifier.value;
+    try {
+      final uid = await _resolveCurrentUserId();
+      if (uid != null && uid.isNotEmpty) {
+        final supaBal = await Supabase.instance.client
+            .from('creator_balances')
+            .select('balance_usd, available_balance_usd')
+            .eq('creator_id', uid)
+            .maybeSingle();
+
+        if (supaBal != null) {
+          final val = supaBal['available_balance_usd'] ?? supaBal['balance_usd'] ?? 0.0;
+          resolvedBalance = double.tryParse(val.toString()) ?? 0.0;
+        } else {
+          // Immediately create initial balance record for this user
+          await Supabase.instance.client.from('creator_balances').upsert({
+            'creator_id': uid,
+            'balance_usd': 0.0,
+            'available_balance_usd': 0.0,
+          });
+        }
+        _lastBalanceFetchTime = DateTime.now();
       }
-    } else {
-      userBalanceNotifier.value = 0.0;
+    } catch (e) {
+      debugPrint('[MicroJobService] Error reloading user balance: $e');
+    } finally {
+      _isReloading = false;
     }
+
+    userBalanceNotifier.value = resolvedBalance;
   }
 
   static const String _lastCompletedTimeKey = 'xapzap_last_completed_task_time';
+  static const String _lastQuickAdTimeKey = 'xapzap_last_quick_ad_time';
+  static const int quickAdCooldownSeconds = 15;
 
   static Future<void> setLastCompletedTime() async {
     final prefs = await SharedPreferences.getInstance();
@@ -79,99 +110,132 @@ class MicroJobService {
     return remainingSeconds > 0 ? remainingSeconds : 0;
   }
 
-  // Reward the user and update the remote database
-  static Future<bool> rewardUser(String taskId, double rewardAmount) async {
-    final user = await BackendService.getCurrentUser();
-    if (user == null) return false;
-
-    // 1. Mark task as completed locally
-    final isNew = await _markTaskCompletedLocally(taskId);
-    if (!isNew && !taskId.startsWith('video_watch_')) return false; // Already rewarded (except video watches)
-
-    // 2. Update balance in Appwrite (and later Supabase)
-    // NOTE: When migrating to Supabase, replace this block with:
-    // await Supabase.instance.client.rpc('reward_user', params: { 'p_user_id': user.id, 'p_amount': rewardAmount });
-    try {
-      final balanceRow = await BackendService.getLatestCreatorBalance(user.$id);
-      if (balanceRow != null) {
-        final data = balanceRow.data as Map<String, dynamic>;
-        final currentBalVal = data['balanceUsd'] ?? 0.0;
-        final currentAvailVal = data['availableBalanceUsd'] ?? 0.0;
-        
-        final double currentBal = currentBalVal is num ? currentBalVal.toDouble() : (double.tryParse(currentBalVal.toString()) ?? 0.0);
-        final double currentAvail = currentAvailVal is num ? currentAvailVal.toDouble() : (double.tryParse(currentAvailVal.toString()) ?? 0.0);
-
-        final newBal = currentBal + rewardAmount;
-        final newAvail = currentAvail + rewardAmount;
-
-        await BackendService.updateRow(
-          BackendService.creatorBalancesCollectionId,
-          balanceRow.$id,
-          {
-            'balanceUsd': newBal,
-            'availableBalanceUsd': newAvail,
-          },
-        );
-      } else {
-        // Create new balance row if one doesn't exist
-        await BackendService.createDocument(
-          BackendService.creatorBalancesCollectionId,
-          {
-            'creatorId': user.$id,
-            'balanceUsd': rewardAmount,
-            'availableBalanceUsd': rewardAmount,
-          },
-        );
-      }
-      
-      // Record last completed time for cooldown
-      await setLastCompletedTime();
-      
-      // Update notifier to refresh UI
-      await reloadUserBalance();
-      return true;
-    } catch (e) {
-      debugPrint('Failed to reward user: $e');
-      return false;
-    }
+  static Future<void> markQuickAdWatched() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lastQuickAdTimeKey, DateTime.now().millisecondsSinceEpoch);
   }
 
-  // Reward a target user directly by userId (e.g. for referrals)
-  static Future<bool> rewardUserDirectly(String userId, double rewardAmount) async {
+  static Future<int> getQuickAdCooldownRemaining() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastTime = prefs.getInt(_lastQuickAdTimeKey) ?? 0;
+    if (lastTime == 0) return 0;
+    final elapsed = (DateTime.now().millisecondsSinceEpoch - lastTime) ~/ 1000;
+    final remaining = quickAdCooldownSeconds - elapsed;
+    return remaining > 0 ? remaining : 0;
+  }
+
+  // Reward the user and update the remote database in Supabase
+  static Future<bool> rewardUser(String taskId, double rewardAmount) async {
+    if (rewardAmount <= 0.0) return true;
+
+    // 1. Mark task as completed locally (always allowed for rush gifts)
+    final isNew = await _markTaskCompletedLocally(taskId);
+    if (!isNew && !taskId.startsWith('video_watch_') && !taskId.startsWith('quick_ad_watch_') && !taskId.startsWith('rush_')) {
+      return false;
+    }
+
+    // 2. Direct Supabase Balance Sync
     try {
-      final balanceRow = await BackendService.getLatestCreatorBalance(userId);
-      if (balanceRow != null) {
-        final data = balanceRow.data as Map<String, dynamic>;
-        final currentBalVal = data['balanceUsd'] ?? 0.0;
-        final currentAvailVal = data['availableBalanceUsd'] ?? 0.0;
-        
-        final double currentBal = currentBalVal is num ? currentBalVal.toDouble() : (double.tryParse(currentBalVal.toString()) ?? 0.0);
-        final double currentAvail = currentAvailVal is num ? currentAvailVal.toDouble() : (double.tryParse(currentAvailVal.toString()) ?? 0.0);
+      final uid = await _resolveCurrentUserId();
+      if (uid != null && uid.isNotEmpty) {
+        final supaBal = await Supabase.instance.client
+            .from('creator_balances')
+            .select('balance_usd, available_balance_usd')
+            .eq('creator_id', uid)
+            .maybeSingle();
 
-        final newBal = currentBal + rewardAmount;
-        final newAvail = currentAvail + rewardAmount;
+        if (supaBal != null) {
+          final curBal = double.tryParse((supaBal['balance_usd'] ?? 0.0).toString()) ?? 0.0;
+          final curAvail = double.tryParse((supaBal['available_balance_usd'] ?? 0.0).toString()) ?? 0.0;
+          await Supabase.instance.client
+              .from('creator_balances')
+              .update({
+                'balance_usd': curBal + rewardAmount,
+                'available_balance_usd': curAvail + rewardAmount,
+              })
+              .eq('creator_id', uid);
+        } else {
+          await Supabase.instance.client.from('creator_balances').upsert({
+            'creator_id': uid,
+            'balance_usd': rewardAmount,
+            'available_balance_usd': rewardAmount,
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('[MicroJobService] Supabase reward sync error: $e');
+    }
 
-        await BackendService.updateRow(
-          BackendService.creatorBalancesCollectionId,
-          balanceRow.$id,
-          {
-            'balanceUsd': newBal,
-            'availableBalanceUsd': newAvail,
-          },
-        );
+    await setLastCompletedTime();
+    await reloadUserBalance();
+    return true;
+  }
+
+  // Deduct balance for entry fees in Supabase (e.g. Host = 1,000 pts ($0.10), Invitee = 500 pts ($0.05))
+  static Future<bool> deductUserBalance(double amount) async {
+    if (amount <= 0.0) return true;
+
+    try {
+      final uid = await _resolveCurrentUserId();
+      if (uid != null && uid.isNotEmpty) {
+        final supaBal = await Supabase.instance.client
+            .from('creator_balances')
+            .select('balance_usd, available_balance_usd')
+            .eq('creator_id', uid)
+            .maybeSingle();
+
+        if (supaBal != null) {
+          final curBal = double.tryParse((supaBal['balance_usd'] ?? 0.0).toString()) ?? 0.0;
+          final curAvail = double.tryParse((supaBal['available_balance_usd'] ?? 0.0).toString()) ?? 0.0;
+          final newBal = (curBal - amount).clamp(0.0, double.infinity);
+          final newAvail = (curAvail - amount).clamp(0.0, double.infinity);
+          await Supabase.instance.client
+              .from('creator_balances')
+              .update({
+                'balance_usd': newBal,
+                'available_balance_usd': newAvail,
+              })
+              .eq('creator_id', uid);
+        }
+      }
+    } catch (e) {
+      debugPrint('[MicroJobService] Supabase deduction error: $e');
+    }
+
+    await reloadUserBalance();
+    return true;
+  }
+
+  // Reward a target user directly by userId in Supabase (e.g. for referrals)
+  static Future<bool> rewardUserDirectly(String userId, double rewardAmount) async {
+    if (rewardAmount <= 0.0 || userId.isEmpty) return true;
+    try {
+      final supaBal = await Supabase.instance.client
+          .from('creator_balances')
+          .select('balance_usd, available_balance_usd')
+          .eq('creator_id', userId)
+          .maybeSingle();
+
+      if (supaBal != null) {
+        final curBal = double.tryParse((supaBal['balance_usd'] ?? 0.0).toString()) ?? 0.0;
+        final curAvail = double.tryParse((supaBal['available_balance_usd'] ?? 0.0).toString()) ?? 0.0;
+        await Supabase.instance.client
+            .from('creator_balances')
+            .update({
+              'balance_usd': curBal + rewardAmount,
+              'available_balance_usd': curAvail + rewardAmount,
+            })
+            .eq('creator_id', userId);
       } else {
-        await BackendService.createDocument(
-          BackendService.creatorBalancesCollectionId,
-          {
-            'creatorId': userId,
-            'balanceUsd': rewardAmount,
-            'availableBalanceUsd': rewardAmount,
-          },
-        );
+        await Supabase.instance.client.from('creator_balances').upsert({
+          'creator_id': userId,
+          'balance_usd': rewardAmount,
+          'available_balance_usd': rewardAmount,
+        });
       }
       return true;
     } catch (e) {
-      debugPrint('Failed to reward user directly: $e');
+      debugPrint('Failed to reward user directly in Supabase: $e');
       return false;
     }
   }
@@ -343,5 +407,71 @@ class MicroJobService {
           .from('app_settings')
           .upsert({'key': 'total_payout_usd', 'value': value.toString()});
     } catch (_) {}
+  }
+
+  static Future<bool> subscribeAdFree(String planName, double price, int durationDays) async {
+    final currentBalance = userBalanceNotifier.value;
+    if (currentBalance < price) {
+      return false; // Insufficient balance
+    }
+
+    final newBalance = currentBalance - price;
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Calculate new expiry (if already active, extend from current expiry)
+    final currentExpiry = prefs.getInt('ad_free_expiry_timestamp') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final baseTime = currentExpiry > now ? currentExpiry : now;
+    final newExpiry = DateTime.fromMillisecondsSinceEpoch(baseTime)
+        .add(Duration(days: durationDays))
+        .millisecondsSinceEpoch;
+
+    await prefs.setInt('ad_free_expiry_timestamp', newExpiry);
+    await prefs.setString('ad_free_active_plan', planName);
+
+    userBalanceNotifier.value = newBalance;
+    try {
+      final user = await BackendService.getCurrentUser();
+      if (user != null) {
+        await Supabase.instance.client
+            .from('profiles')
+            .update({
+              'earnings_balance': newBalance,
+              'ad_free_expiry': DateTime.fromMillisecondsSinceEpoch(newExpiry).toIso8601String(),
+            })
+            .eq('id', user.$id);
+      }
+    } catch (e) {
+      debugPrint('Error updating ad-free plan in Supabase: $e');
+    }
+    return true;
+  }
+
+  static Future<bool> subscribeAdFreeViaPlayStore(String planName, double price, int durationDays) async {
+    final prefs = await SharedPreferences.getInstance();
+    final currentExpiry = prefs.getInt('ad_free_expiry_timestamp') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final baseTime = currentExpiry > now ? currentExpiry : now;
+    final newExpiry = DateTime.fromMillisecondsSinceEpoch(baseTime)
+        .add(Duration(days: durationDays))
+        .millisecondsSinceEpoch;
+
+    await prefs.setInt('ad_free_expiry_timestamp', newExpiry);
+    await prefs.setString('ad_free_active_plan', planName);
+
+    try {
+      final user = await BackendService.getCurrentUser();
+      if (user != null) {
+        await Supabase.instance.client
+            .from('profiles')
+            .update({
+              'ad_free_expiry': DateTime.fromMillisecondsSinceEpoch(newExpiry).toIso8601String(),
+            })
+            .eq('id', user.$id);
+      }
+    } catch (e) {
+      debugPrint('Error updating ad-free Play Store plan in Supabase: $e');
+    }
+    return true;
   }
 }

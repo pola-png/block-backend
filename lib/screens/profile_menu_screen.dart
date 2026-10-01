@@ -8,6 +8,7 @@ import 'dashboard_screen.dart';
 import 'drafts_screen.dart';
 import 'edit_profile_screen.dart';
 import 'help_support_screen.dart';
+import 'level_upgrades_screen.dart';
 import 'monetization_screen.dart';
 import 'premium_screen.dart';
 import 'privacy_policy_screen.dart';
@@ -90,6 +91,16 @@ class ProfileMenuScreen extends StatelessWidget {
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const MonetizationScreen()),
+              );
+            },
+          ),
+          const SizedBox(height: 8),
+          _MenuTile(
+            icon: Icons.stars_outlined,
+            title: 'Level Upgrades & Ad-Free Passes',
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LevelUpgradesScreen()),
               );
             },
           ),

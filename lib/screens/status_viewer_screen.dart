@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:video_player/video_player.dart';
 import 'package:xapzap/services/backend_service.dart';
 import 'package:xapzap/services/crypto_service.dart';
@@ -288,7 +288,7 @@ class _StatusViewerScreenState extends State<StatusViewerScreen>
                     shape: BoxShape.circle,
                     color: const Color(0xFF29ABE2),
                     image: DecorationImage(
-                      image: NetworkImage(_currentStatus.userAvatar),
+                      image: CachedNetworkImageProvider(_currentStatus.userAvatar),
                       fit: BoxFit.cover,
                       onError: (exception, stackTrace) {},
                     ),

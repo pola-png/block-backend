@@ -14,6 +14,7 @@ import 'story_publish_screen.dart';
 import '../models/app_notification.dart';
 import '../services/backend_service.dart';
 import '../services/navigation_service.dart';
+import '../services/user_plan_service.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -234,6 +235,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Future<void> _pickStory(ImageSource source, {required bool video}) async {
+    final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+      context,
+      mediaType: video ? 'story videos' : 'story photos',
+    );
+    if (!allowed || !mounted) return;
     try {
       final file = video
           ? await _picker.pickVideo(
@@ -307,7 +313,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return FileImage(File(previewPath));
     }
     if (status.userAvatar.isNotEmpty) {
-      return NetworkImage(status.userAvatar);
+      return CachedNetworkImageProvider(status.userAvatar);
     }
     return null;
   }
@@ -444,7 +450,7 @@ class _NotificationsListState extends State<_NotificationsList> {
                     radius: 24,
                     backgroundImage: notification.actorAvatar != null &&
                             notification.actorAvatar!.isNotEmpty
-                        ? NetworkImage(notification.actorAvatar!)
+                        ? CachedNetworkImageProvider(notification.actorAvatar!)
                         : null,
                     child: (notification.actorAvatar == null ||
                             notification.actorAvatar!.isEmpty)

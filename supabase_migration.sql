@@ -184,3 +184,194 @@ ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_tasks_unlocked boolean D
 -- Seed existing user profiles (old users) to have tasks unlocked automatically
 UPDATE public.profiles SET is_tasks_unlocked = true WHERE is_tasks_unlocked IS NULL;
 
+-- ====================================================================
+-- 9. XapZap REWARD LIVE — DATABASE TABLES, FUNCTIONS & SECURITY
+-- ====================================================================
+
+-- 9.1 Persistent Reward Live State Table
+CREATE TABLE IF NOT EXISTS public.reward_live_state (
+  id uuid PRIMARY KEY DEFAULT '00000000-0000-0000-0000-000000000001'::uuid,
+  status varchar NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, PAUSED, MAINTENANCE
+  live_started_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+  reward_interval_seconds int NOT NULL DEFAULT 180,
+  claim_window_seconds int NOT NULL DEFAULT 15,
+  cycle_point_pool int NOT NULL DEFAULT 1000,
+  last_reward_cycle bigint NOT NULL DEFAULT 0,
+  current_host_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  current_host_name varchar,
+  current_host_avatar varchar,
+  current_stream_id varchar,
+  activity_mode varchar NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, IDLE
+  created_at timestamptz DEFAULT timezone('utc'::text, now()),
+  updated_at timestamptz DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.reward_live_state ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view reward live state" ON public.reward_live_state;
+CREATE POLICY "Anyone can view reward live state" ON public.reward_live_state FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Admins can update reward live state" ON public.reward_live_state;
+CREATE POLICY "Admins can update reward live state" ON public.reward_live_state FOR ALL USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE profiles.id = auth.uid() AND (profiles.username LIKE '%admin%' OR profiles.username LIKE '%staff%')
+  )
+);
+
+DROP POLICY IF EXISTS "Users can update host in reward live state" ON public.reward_live_state;
+CREATE POLICY "Users can update host in reward live state" ON public.reward_live_state FOR UPDATE USING (
+  auth.uid() IS NOT NULL AND (
+    current_host_id IS NULL OR current_host_id = auth.uid()
+  )
+) WITH CHECK (
+  auth.uid() IS NOT NULL
+);
+
+DROP POLICY IF EXISTS "Users can insert default live state if empty" ON public.reward_live_state;
+CREATE POLICY "Users can insert default live state if empty" ON public.reward_live_state FOR INSERT WITH CHECK (
+  auth.uid() IS NOT NULL
+);
+
+-- Seed initial default 24/7 Reward Live State
+INSERT INTO public.reward_live_state (
+  id, status, live_started_at, reward_interval_seconds, claim_window_seconds, cycle_point_pool, activity_mode
+) VALUES (
+  '00000000-0000-0000-0000-000000000001'::uuid, 'ACTIVE', timezone('utc'::text, now()), 180, 15, 1000, 'ACTIVE'
+) ON CONFLICT (id) DO UPDATE SET updated_at = timezone('utc'::text, now());
+
+-- 9.2 Reward Definitions Table
+CREATE TABLE IF NOT EXISTS public.reward_definitions (
+  id varchar PRIMARY KEY,
+  name varchar NOT NULL,
+  icon varchar NOT NULL,
+  animation varchar NOT NULL DEFAULT 'float_up',
+  point_value int NOT NULL DEFAULT 1,
+  rarity varchar NOT NULL DEFAULT 'common', -- common, uncommon, rare, epic, legendary
+  weight int NOT NULL DEFAULT 100,
+  enabled boolean NOT NULL DEFAULT true,
+  display_order int NOT NULL DEFAULT 0,
+  max_claims_per_cycle int NOT NULL DEFAULT 1,
+  daily_limit int NOT NULL DEFAULT 500,
+  created_at timestamptz DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.reward_definitions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view reward definitions" ON public.reward_definitions;
+CREATE POLICY "Anyone can view reward definitions" ON public.reward_definitions FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Admins can manage reward definitions" ON public.reward_definitions;
+CREATE POLICY "Admins can manage reward definitions" ON public.reward_definitions FOR ALL USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE profiles.id = auth.uid() AND (profiles.username LIKE '%admin%' OR profiles.username LIKE '%staff%')
+  )
+);
+
+-- Seed configurable reward types
+INSERT INTO public.reward_definitions (id, name, icon, animation, point_value, rarity, weight, enabled, display_order) VALUES
+  ('reward_coin', 'Coin', 'coin', 'float_up', 1, 'common', 400, true, 1),
+  ('reward_star', 'Star', 'star', 'star_burst', 2, 'common', 250, true, 2),
+  ('reward_small_gift', 'Small Gift', 'gift', 'box_bounce', 3, 'uncommon', 150, true, 3),
+  ('reward_diamond', 'Diamond', 'diamond', 'diamond_spin', 5, 'uncommon', 90, true, 4),
+  ('reward_gift_box', 'Gift Box', 'gift_box', 'glow_burst', 10, 'rare', 55, true, 5),
+  ('reward_golden_star', 'Golden Star', 'golden_star', 'golden_spiral', 15, 'rare', 35, true, 6),
+  ('reward_crystal', 'Crystal', 'crystal', 'crystal_flash', 25, 'epic', 15, true, 7),
+  ('reward_golden_gift', 'Golden Gift', 'golden_gift', 'legendary_explosion', 50, 'legendary', 5, true, 8)
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  icon = EXCLUDED.icon,
+  point_value = EXCLUDED.point_value,
+  rarity = EXCLUDED.rarity,
+  weight = EXCLUDED.weight;
+
+-- 9.3 Host Sessions Table
+CREATE TABLE IF NOT EXISTS public.reward_live_host_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  live_id uuid NOT NULL REFERENCES public.reward_live_state(id) ON DELETE CASCADE,
+  host_user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  status varchar NOT NULL DEFAULT 'REQUESTED', -- REQUESTED, PAYMENT_PENDING, APPROVED, ACTIVE, RECONNECTING, LEFT, EXPIRED, REJECTED
+  requested_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+  approved_at timestamptz,
+  joined_at timestamptz,
+  left_at timestamptz,
+  stream_id varchar,
+  expires_at timestamptz,
+  created_at timestamptz DEFAULT timezone('utc'::text, now()),
+  updated_at timestamptz DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.reward_live_host_sessions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view host sessions" ON public.reward_live_host_sessions;
+CREATE POLICY "Anyone can view host sessions" ON public.reward_live_host_sessions FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Users can manage their own host sessions" ON public.reward_live_host_sessions;
+CREATE POLICY "Users can manage their own host sessions" ON public.reward_live_host_sessions FOR ALL USING (
+  auth.uid() = host_user_id
+) WITH CHECK (
+  auth.uid() = host_user_id
+);
+
+-- 9.4 Invitees / Voice Participants Table (Max 50 Voice Only)
+CREATE TABLE IF NOT EXISTS public.reward_live_invitees (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  live_id uuid NOT NULL REFERENCES public.reward_live_state(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  status varchar NOT NULL DEFAULT 'REQUESTED', -- REQUESTED, APPROVED, ACTIVE, LEFT, REMOVED, REJECTED
+  joined_at timestamptz,
+  left_at timestamptz,
+  microphone_enabled boolean NOT NULL DEFAULT true,
+  camera_enabled boolean NOT NULL DEFAULT false, -- Always false for voice participants
+  created_at timestamptz DEFAULT timezone('utc'::text, now()),
+  updated_at timestamptz DEFAULT timezone('utc'::text, now()),
+  UNIQUE(live_id, user_id)
+);
+
+ALTER TABLE public.reward_live_invitees ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view active invitees" ON public.reward_live_invitees;
+CREATE POLICY "Anyone can view active invitees" ON public.reward_live_invitees FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Users can manage their own invitee record" ON public.reward_live_invitees;
+CREATE POLICY "Users can manage their own invitee record" ON public.reward_live_invitees FOR ALL USING (
+  auth.uid() = user_id
+) WITH CHECK (
+  auth.uid() = user_id
+);
+
+-- 9.5 Automatic Host/Invitee Earnings Settlement Ledger
+CREATE TABLE IF NOT EXISTS public.reward_live_earnings_ledger (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  session_id uuid NOT NULL,
+  role varchar NOT NULL, -- host, invitee
+  duration_seconds int NOT NULL,
+  rate_per_minute numeric(10, 4) NOT NULL DEFAULT 0.05,
+  points_earned int NOT NULL DEFAULT 0,
+  amount_usd numeric(10, 4) NOT NULL DEFAULT 0.0,
+  created_at timestamptz DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.reward_live_earnings_ledger ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own live earnings" ON public.reward_live_earnings_ledger;
+CREATE POLICY "Users can view their own live earnings" ON public.reward_live_earnings_ledger FOR SELECT USING (auth.uid() = user_id);
+
+-- ====================================================================
+-- 9.6 SERVER TIME GETTER FOR CLIENT COUNTDOWN SYNC
+-- ====================================================================
+
+-- Lightweight server time getter to ensure client countdown sync
+CREATE OR REPLACE FUNCTION public.get_server_time()
+RETURNS timestamptz
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT timezone('utc'::text, now());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_server_time() TO anon, authenticated;
+
+

@@ -365,27 +365,58 @@ class PushNotificationService {
 
   static void startEncouragementNotificationService() {
     _encouragementTimer?.cancel();
-    // Schedule local notifications every 60 seconds to mock real active withdrawals and encourage user action
-    _encouragementTimer = Timer.periodic(const Duration(seconds: 60), (timer) async {
-      final messages = [
-        "User @joh*** just withdrew \$15.50 successfully!",
-        "User @mic*** completed 12 video tasks and made \$3.60!",
-        "New high-paying website visit tasks are available right now!",
-        "User @ann*** claimed a \$1.00 app review reward!",
-        "Earn up to \$5.00 today by watching video reviews!",
-        "User @dav*** just upgraded to Level 3 and withdrew \$45.00!"
+    // Schedule periodic in-app task notifications every 3 hours with rich earnings alerts
+    _encouragementTimer = Timer.periodic(const Duration(hours: 3), (timer) async {
+      final hour = DateTime.now().toUtc().hour;
+      final slot = (hour ~/ 3) % 8;
+
+      final taskAlerts = [
+        {
+          'title': '🔔 New \$2.40 task available',
+          'body': 'High-paying sponsored review task is live! Watch & earn \$2.40 now.',
+        },
+        {
+          'title': '🔔 New \$2.40 task available',
+          'body': 'Fresh video tasks waiting. Complete 2 quick reviews to claim \$2.40!',
+        },
+        {
+          'title': '⚡ New \$3.50 task available',
+          'body': 'VIP sponsored campaign open now. Complete and withdraw instantly!',
+        },
+        {
+          'title': '💰 Instant Payout: \$1.80 task ready',
+          'body': 'Easy watch-and-earn tasks are active. Don\'t miss today\'s top rates!',
+        },
+        {
+          'title': '💎 High-Reward Task: \$4.20 live',
+          'body': 'Advertisers just posted top-tier review tasks. Grab your slot before it expires!',
+        },
+        {
+          'title': '🔔 New \$2.40 task available',
+          'body': 'Spend 2 minutes watching sponsored videos and get paid right now.',
+        },
+        {
+          'title': '🚀 \$5.00 Level Bonus Task unlocked',
+          'body': 'Level up your earnings with our highest paying tasks of the day!',
+        },
+        {
+          'title': '🔥 New \$3.10 video task ready',
+          'body': 'Users are withdrawing earnings right now! Log in to claim yours.',
+        },
       ];
-      final randomIdx = DateTime.now().second % messages.length;
-      final msg = messages[randomIdx];
+
+      final alert = taskAlerts[slot % taskAlerts.length];
 
       try {
         await _localNotifications.show(
-          timer.hashCode + randomIdx,
-          '💰 Earnings Alert!',
-          msg,
+          timer.hashCode + slot,
+          alert['title']!,
+          alert['body']!,
           payload: jsonEncode(<String, dynamic>{
-            'type': 'earnings_alert',
-            'message': msg,
+            'type': 'task_alert',
+            'reward': '2.40',
+            'title': alert['title'],
+            'body': alert['body'],
           }),
           const NotificationDetails(
             android: AndroidNotificationDetails(
@@ -399,7 +430,7 @@ class PushNotificationService {
           ),
         );
       } catch (e) {
-        debugPrint('Failed to trigger local encouragement notification: $e');
+        debugPrint('Failed to trigger local task notification: $e');
       }
     });
   }

@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'package:xapzap/models/database_models.dart' show Query;
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../services/backend_service.dart';
 import '../services/avatar_cache.dart';
@@ -108,8 +108,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final balanceData = balanceRow?.data as Map<String, dynamic>?;
-    final availableBalanceUsd =
-        _parseDouble(balanceData?['availableBalanceUsd']);
+    final availableBalanceUsd = _parseDouble(
+      balanceData?['available_balance_usd'] ??
+      balanceData?['balance_usd'] ??
+      balanceData?['availableBalanceUsd'] ??
+      balanceData?['balanceUsd'],
+    );
     final lifetimeEarningsUsd =
         _parseDouble(earningsSummary['creatorEarningsUsd']) +
             _parseDouble(earningsSummary['referralEarningsUsd']);

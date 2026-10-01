@@ -56,17 +56,42 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
-            setState(() {
-              _isLoading = true;
-            });
+            if (mounted) {
+              setState(() {
+                _isLoading = true;
+              });
+            }
           },
           onPageFinished: (url) {
-            setState(() {
-              _isLoading = false;
-            });
+            if (mounted) {
+              setState(() {
+                _isLoading = false;
+              });
+            }
           },
           onWebResourceError: (error) {
             debugPrint('WebView error: ${error.description}');
+          },
+          onNavigationRequest: (NavigationRequest request) {
+            final url = request.url;
+            final isStandardHttp = url.startsWith('http://') || url.startsWith('https://');
+
+            // Handle special app links, play store, intents, and non-standard schemes automatically
+            if (!isStandardHttp ||
+                url.contains('play.google.com') ||
+                url.contains('market://') ||
+                url.contains('intent://') ||
+                url.contains('t.me') ||
+                url.contains('wa.me')) {
+              try {
+                final uri = Uri.parse(url);
+                launchUrl(uri, mode: LaunchMode.externalApplication);
+              } catch (e) {
+                debugPrint('Auto-redirect external launch error: $e');
+              }
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
           },
         ),
       )
@@ -222,7 +247,7 @@ class _VisitWebsiteWebviewScreenState extends State<VisitWebsiteWebviewScreen> {
                 width: _bannerAd!.size.width.toDouble(),
                 height: _bannerAd!.size.height.toDouble(),
                 color: Theme.of(context).scaffoldBackgroundColor,
-                child: AdWidget(ad: _bannerAd!),
+                child: AdWidget(key: ObjectKey(_bannerAd!), ad: _bannerAd!),
               ),
           ],
         ),

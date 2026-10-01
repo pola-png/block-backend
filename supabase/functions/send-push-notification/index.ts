@@ -89,35 +89,141 @@ serve(async (req: Request) => {
     });
     console.log("[Push] Request body:", JSON.stringify(body));
 
-    const defaultAlerts = [
-      {
-        title: "💰 Earnings Alert!",
-        message: "Users are withdrawing their earnings right now! Come back and earn yours!"
-      },
-      {
-        title: "⚡ New Tasks Available!",
-        message: "High-paying watch jobs have just been added. Start earning now!"
-      },
-      {
-        title: "🔥 Daily Payouts Active!",
-        message: "Boom! Payouts are processing. Log in to check your active earnings."
-      },
-      {
-        title: "💎 Level Up Your Earnings!",
-        message: "Earn up to $1.00 per video review. Check out active levels today!"
-      },
-      {
-        title: "🚀 Earn on the Go!",
-        message: "Spend 2 minutes watching sponsored videos and get paid instantly."
-      }
-    ];
+    // 3-hour schedule notification alert pools (8 slots covering the 24-hour day)
+    // Slot 0: 00:00-03:00 UTC | Slot 1: 03:00-06:00 UTC | Slot 2: 06:00-09:00 UTC | Slot 3: 09:00-12:00 UTC
+    // Slot 4: 12:00-15:00 UTC | Slot 5: 15:00-18:00 UTC | Slot 6: 18:00-21:00 UTC | Slot 7: 21:00-24:00 UTC
+    const scheduled3HourAlerts: Record<number, Array<{ title: string; message: string }>> = {
+      // 00:00 - 02:59 UTC (Late Night Boost)
+      0: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Night-owl tasks are live! Complete quick video tasks and earn $2.40 now.",
+        },
+        {
+          title: "🌙 Midnight Boost: $3.10 task open",
+          message: "New sponsored review tasks just unlocked. Start earning before spots fill up!",
+        },
+        {
+          title: "⚡ Flash Task: Earn $1.95 in 2 mins",
+          message: "Quick video task waiting for you. Get credited to your balance instantly!",
+        },
+      ],
+      // 03:00 - 05:59 UTC (Early Morning Payouts)
+      1: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Early bird rewards are here! Watch a quick sponsored video to claim your $2.40.",
+        },
+        {
+          title: "💸 $4.20 VIP task unlocked",
+          message: "Exclusive high-payout video task is available. Watch and review now!",
+        },
+        {
+          title: "🚀 Daily tasks refreshed: $2.80 available",
+          message: "Start your morning with fresh earnings. Log in to claim your tasks!",
+        },
+      ],
+      // 06:00 - 08:59 UTC (Morning Rush)
+      2: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Fresh morning task batch is online. Earn $2.40 directly into your creator balance!",
+        },
+        {
+          title: "☕ Morning Coffee Bonus: $3.50 task",
+          message: "Take 3 minutes to review sponsored videos and get paid right now.",
+        },
+        {
+          title: "💰 $2.10 Quick Payout Task ready",
+          message: "Easy watch-and-earn tasks are active. Don't miss today's top rates!",
+        },
+      ],
+      // 09:00 - 11:59 UTC (Mid-Day Peak)
+      3: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "New sponsored tasks just dropped! Watch and review to claim your $2.40 reward.",
+        },
+        {
+          title: "🔥 High-paying $4.80 campaign live",
+          message: "Advertisers just posted top-tier review tasks. Grab your slot before it expires!",
+        },
+        {
+          title: "💎 $3.25 Video Review Task Available",
+          message: "Earn while watching creator content. Instant withdrawal to your wallet!",
+        },
+      ],
+      // 12:00 - 14:59 UTC (Lunchtime Drop)
+      4: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Lunchtime bonus is active! Complete simple video tasks and get paid $2.40 instantly.",
+        },
+        {
+          title: "⚡ Quick $2.90 task waiting for you",
+          message: "Spend 2 minutes during your break and grow your XapZap wallet balance!",
+        },
+        {
+          title: "🎁 Sponsored Reward: $5.00 task live",
+          message: "Level up your earnings with our highest paying tasks of the day!",
+        },
+      ],
+      // 15:00 - 17:59 UTC (Afternoon Surge)
+      5: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Afternoon reward surge! Watch, review and earn $2.40 instantly on XapZap.",
+        },
+        {
+          title: "💰 Instant Payout: $3.60 task active",
+          message: "Over 500+ users cashed out today. Hop on and complete your video tasks!",
+        },
+        {
+          title: "🚀 $2.20 Express Task open",
+          message: "Fast watch-and-earn tasks ready for completion. Tap to start now!",
+        },
+      ],
+      // 18:00 - 20:59 UTC (Evening Prime Time)
+      6: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Evening prime-time rewards are live! Complete the $2.40 featured task now.",
+        },
+        {
+          title: "💎 Prime Reward: $4.50 task available",
+          message: "Top sponsored campaigns just launched for the evening rush. Earn big today!",
+        },
+        {
+          title: "🔥 $3.40 Video Task ready to claim",
+          message: "Relax, watch entertaining content, and earn real cash balance instantly.",
+        },
+      ],
+      // 21:00 - 23:59 UTC (Night Cap & Final Bonus)
+      7: [
+        {
+          title: "🔔 New $2.40 task available",
+          message: "Last call for today's high-paying tasks! Earn $2.40 before daily reset.",
+        },
+        {
+          title: "🌟 End of Day Bonus: $3.75 task",
+          message: "Complete your daily streak and boost your earnings before tomorrow!",
+        },
+        {
+          title: "💸 Instant Withdrawal Alert: $2.50 task",
+          message: "Hit your withdrawal threshold tonight with quick sponsored video reviews.",
+        },
+      ],
+    };
 
-    const randomAlert = defaultAlerts[Math.floor(Math.random() * defaultAlerts.length)];
+    const currentUtcHour = new Date().getUTCHours();
+    const currentSlot = Math.floor(currentUtcHour / 3);
+    const alertPool = scheduled3HourAlerts[currentSlot] ?? scheduled3HourAlerts[0];
+    const scheduledAlert = alertPool[Math.floor(Math.random() * alertPool.length)];
 
-    const title: string = body.title ?? randomAlert.title;
-    const message: string = body.message ?? randomAlert.message;
+    const title: string = body.title ?? scheduledAlert.title;
+    const message: string = body.message ?? scheduledAlert.message;
     const topic: string = body.topic ?? "all-users";
-    const data: Record<string, string> = body.data ?? { type: "earnings_alert" };
+    const data: Record<string, string> = body.data ?? { type: "task_alert", reward: "2.40" };
 
     // Load Firebase service account from Supabase secrets
     const serviceAccountStr = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");

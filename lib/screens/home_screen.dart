@@ -23,6 +23,7 @@ import '../widgets/home_feed_ad_widgets.dart';
 import '../services/avatar_cache.dart';
 import '../services/native_ad_preload_service.dart';
 import '../services/rewarded_ad_preload_service.dart';
+import '../services/user_plan_service.dart';
 import '../services/device_mode_service.dart';
 import '../services/push_notification_service.dart';
 import '../services/home_feed_batch_layout.dart';
@@ -40,10 +41,14 @@ import 'live_screen.dart';
 import 'news_detail_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../widgets/micro_jobs_view.dart';
+import '../widgets/reward_live/reward_live_view.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  static final GlobalKey<_HomeScreenState> globalKey = GlobalKey<_HomeScreenState>();
+  static final ValueNotifier<int> activeTabNotifier = ValueNotifier<int>(0);
+  final ValueChanged<int>? onTabChanged;
+
+  HomeScreen({Key? key, this.onTabChanged}) : super(key: key ?? globalKey);
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -51,6 +56,17 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
+  int get currentTabIndex => _tabController.index;
+
+  void selectTab(int index) {
+    if (mounted && _tabController.index != index) {
+      setState(() {
+        _tabController.animateTo(index);
+      });
+      HomeScreen.activeTabNotifier.value = index;
+      widget.onTabChanged?.call(index);
+    }
+  }
   static const String _feedSessionSeedKey = 'feed_session_seed_v1';
   static const int _reelPrefetchAheadCount = 2;
   final List<Post> _forYouPosts = FeedCache.forYouPosts;
@@ -107,6 +123,10 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _checkUser();
     _tabController = TabController(length: 7, vsync: this);
+    _tabController.addListener(() {
+      HomeScreen.activeTabNotifier.value = _tabController.index;
+      widget.onTabChanged?.call(_tabController.index);
+    });
     StoryManager.init();
     _storiesListener = _syncStories;
     StoryManager.stories.addListener(_storiesListener);
@@ -675,7 +695,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   List<Widget> _buildTabViews() {
     return [
-      const MicroJobsView(),
+      KeepAliveTab(builder: (_) => const RewardLiveView()),
       KeepAliveTab(
         builder: (_) => _buildFeed(_forYouPosts, _forYouController, true),
       ),
@@ -1045,9 +1065,10 @@ class _HomeScreenState extends State<HomeScreen>
               fit: StackFit.expand,
               children: [
                 if (thumb != null && thumb.isNotEmpty)
-                  Image.network(
-                    thumb,
+                  CachedNetworkImage(
+                    imageUrl: thumb,
                     fit: BoxFit.cover,
+                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
                   )
                 else
                   Container(
@@ -1276,10 +1297,10 @@ class _HomeScreenState extends State<HomeScreen>
                   child: SizedBox(
                     width: 110,
                     height: 85,
-                    child: Image.network(
-                      thumb,
+                    child: CachedNetworkImage(
+                      imageUrl: thumb,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      errorWidget: (_, __, ___) => const SizedBox.shrink(),
                     ),
                   ),
                 ),
@@ -2478,6 +2499,11 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _pickStory(ImageSource source, {required bool video}) async {
+    final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+      context,
+      mediaType: video ? 'story videos' : 'story photos',
+    );
+    if (!allowed || !mounted) return;
     try {
       final XFile? file = video
           ? await _storyPicker.pickVideo(

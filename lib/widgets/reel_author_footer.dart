@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../utils/format_utils.dart';
 
 class ReelAuthorFooter extends StatelessWidget {
@@ -123,12 +124,12 @@ class _AuthorAvatar extends StatelessWidget {
                 size: 22,
                 color: theme.colorScheme.onSurfaceVariant,
               )
-            : Image.network(
-                avatar,
+            : CachedNetworkImage(
+                imageUrl: avatar,
                 fit: BoxFit.cover,
                 width: 40,
                 height: 40,
-                errorBuilder: (context, error, stackTrace) => Icon(
+                errorWidget: (context, url, error) => Icon(
                   Icons.person,
                   size: 22,
                   color: theme.colorScheme.onSurfaceVariant,

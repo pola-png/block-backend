@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'settings/account_settings_screen.dart';
@@ -7,6 +7,7 @@ import 'settings/privacy_settings_screen.dart';
 import 'settings/appearance_settings_screen.dart';
 import 'settings/notifications_settings_screen.dart';
 import 'settings/help_settings_screen.dart';
+import 'level_upgrades_screen.dart';
 import '../services/backend_service.dart';
 import '../widgets/tv_focusable_action.dart';
 import 'admin_earnings_control_screen.dart';
@@ -96,6 +97,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const AccountSettingsScreen()),
+              );
+            },
+          ),
+          _buildMenuItem(
+            context,
+            icon: LucideIcons.trendingUp,
+            title: 'Level Upgrades & Ad-Free Passes',
+            description: 'Upgrade your earning level & activate ad-free passes',
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const LevelUpgradesScreen()),
               );
             },
           ),

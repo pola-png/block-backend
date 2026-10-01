@@ -493,7 +493,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen>
       final videoAspect = _getVideoAspectRatio();
       bottomAdWidget = AspectRatio(
         aspectRatio: videoAspect / 1.2,
-        child: AdWidget(ad: _bottomAd!),
+        child: AdWidget(key: ObjectKey(_bottomAd!), ad: _bottomAd!),
       );
     }
 
@@ -552,7 +552,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen>
             child: Stack(
               children: [
                 Positioned.fill(
-                  child: AdWidget(ad: _videoAd!),
+                  child: AdWidget(key: ObjectKey(_videoAd!), ad: _videoAd!),
                 ),
                 Positioned(
                   bottom: 12,

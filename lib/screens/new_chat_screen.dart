@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../services/backend_service.dart';
 import '../models/chat.dart';
@@ -113,7 +114,7 @@ class _NewChatScreenState extends State<NewChatScreen> {
                     backgroundColor: const Color(0xFF29ABE2),
                     backgroundImage:
                         avatar.isNotEmpty && avatar.startsWith('http')
-                            ? NetworkImage(avatar)
+                            ? CachedNetworkImageProvider(avatar)
                             : null,
                     child: avatar.isEmpty && displayName.isNotEmpty
                         ? Text(displayName[0])

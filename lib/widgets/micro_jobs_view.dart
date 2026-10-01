@@ -10,17 +10,17 @@ import '../services/app_review_service.dart';
 import '../services/backend_service.dart';
 import '../services/ad_helper.dart';
 import '../services/ad_gate_service.dart';
-import '../screens/job_video_player_screen.dart';
-import 'home_feed_ad_widgets.dart';
+import '../services/vpn_enforcement_service.dart';
 
 // New screen imports
 import '../screens/withdrawal_settings_screen.dart';
 import '../screens/level_upgrades_screen.dart';
 import '../screens/submit_video_campaign_screen.dart';
-import '../screens/video_review_screen.dart';
 import '../screens/monetization_screen.dart';
-import '../screens/visit_website_gateway_screen.dart';
 import '../screens/perform_tasks_screen.dart';
+import '../screens/ai_training_tasks_screen.dart';
+import 'ad_free_subscription_dialog.dart';
+import 'animated_balance_text.dart';
 
 class MicroJobsView extends StatefulWidget {
   const MicroJobsView({super.key});
@@ -29,7 +29,10 @@ class MicroJobsView extends StatefulWidget {
   State<MicroJobsView> createState() => _MicroJobsViewState();
 }
 
-class _MicroJobsViewState extends State<MicroJobsView> {
+class _MicroJobsViewState extends State<MicroJobsView>
+    with AutomaticKeepAliveClientMixin<MicroJobsView> {
+  @override
+  bool get wantKeepAlive => true;
   bool _appReviewCompleted = false;
   List<Post> _adminVideos = [];
   List<Map<String, dynamic>> _advertiserCampaigns = [];
@@ -82,6 +85,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     _startCooldownCountdown();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAdAwarenessConsent();
+      AdFreeSubscriptionDialog.checkAndShowDailyPopup(context);
     });
     
     MicroJobService.getTotalPayoutBase().then((val) {
@@ -90,10 +94,6 @@ class _MicroJobsViewState extends State<MicroJobsView> {
           _livePayouts = val;
         });
       }
-    });
-
-    _interstitialTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      _showInterstitialAd();
     });
 
     _tickerTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
@@ -307,14 +307,13 @@ class _MicroJobsViewState extends State<MicroJobsView> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'XapZap provides high cash rewards for completing tasks. To maintain these high payouts and support the platform, short ads and rewarded videos are shown when performing tasks.',
+                  'XapZap provides high cash rewards for completing tasks. Complete tasks accurately to unlock payouts.',
                   style: TextStyle(fontSize: 13, height: 1.4, color: isDark ? Colors.white70 : Colors.grey.shade800),
                 ),
                 const SizedBox(height: 12),
                 Text(
                   '• Every completed task credits real earnings to your balance.\n'
-                  '• Watching short sponsor ads helps keep payout rates high (\$0.20 - \$1.50+).\n'
-                  '• By proceeding, you agree to support the app through ads.',
+                  '• Complete tasks accurately to maximize your daily earnings.',
                   style: TextStyle(fontSize: 12, height: 1.5, color: isDark ? Colors.white54 : Colors.grey.shade600),
                 ),
               ],
@@ -543,6 +542,28 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     }
   }
 
+  void _showTopToast(BuildContext context, String message, {bool isError = false}) {
+    final overlayState = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlayState == null) return;
+
+    late OverlayEntry overlayEntry;
+    overlayEntry = OverlayEntry(
+      builder: (context) {
+        return _TopToastWidget(
+          message: message,
+          isError: isError,
+          onDismiss: () {
+            if (overlayEntry.mounted) {
+              overlayEntry.remove();
+            }
+          },
+        );
+      },
+    );
+
+    overlayState.insert(overlayEntry);
+  }
+
 
 
   Future<void> _completeAppReviewFlow() async {
@@ -576,6 +597,8 @@ class _MicroJobsViewState extends State<MicroJobsView> {
     );
 
     if (confirmed == true) {
+      final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'starter_app_review');
+      if (!adWatched) return;
       final success = await MicroJobService.rewardUser('starter_app_review', 0.20);
       if (success) {
         setState(() {
@@ -642,6 +665,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     final isDark = theme.brightness == Brightness.dark;
@@ -671,73 +695,111 @@ class _MicroJobsViewState extends State<MicroJobsView> {
         children: [
           Card(
             elevation: 2,
-            color: isDark ? null : Colors.white,
+            color: isDark ? const Color(0xFF1E293B) : Colors.white,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
+              side: BorderSide(
+                color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                width: 1.2,
+              ),
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                children: [
-                  InkWell(
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const MonetizationScreen()),
-                      ).then((_) => _loadStateAndJobs());
-                    },
-                    borderRadius: BorderRadius.circular(8),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(Icons.account_balance_wallet, color: theme.colorScheme.primary, size: 20),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Available Earnings',
-                                style: TextStyle(
-                                  color: theme.colorScheme.onSurface,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const MonetizationScreen()),
+                ).then((_) => _loadStateAndJobs());
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(
+                                    Icons.account_balance_wallet_rounded,
+                                    color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                                    size: 18,
+                                  ),
                                 ),
-                              ),
-                            ],
-                          ),
-                          ValueListenableBuilder<double>(
-                            valueListenable: MicroJobService.userBalanceNotifier,
-                            builder: (context, balance, _) {
-                              return Text(
-                                '\$${balance.toStringAsFixed(3)}',
-                                style: const TextStyle(
-                                  color: Color(0xFF1B5E20), // Deep premium forest green
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: -0.5,
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Available Earnings',
+                                  style: TextStyle(
+                                    color: theme.colorScheme.onSurface,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.2,
+                                  ),
                                 ),
-                              );
-                            },
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Text(
+                                  'Tap to view Monetization',
+                                  style: TextStyle(
+                                    color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(width: 2),
+                                Icon(
+                                  Icons.chevron_right_rounded,
+                                  size: 14,
+                                  color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        ReactiveAnimatedBalance(
+                          decimalDigits: 5,
+                          style: TextStyle(
+                            color: isDark ? const Color(0xFF22C55E) : const Color(0xFF16A34A), // Standard emerald green
+                            fontSize: 26,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -0.5,
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                  ),
-                  if (_isEligibleForBonus) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      '50% Upgrade Bonus: ${_formatDuration(_remainingBonusTime)}',
-                      style: TextStyle(
-                        color: Colors.orange.shade900,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 12,
+                    if (_isEligibleForBonus) ...[
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '⚡ 50% Upgrade Bonus: ${_formatDuration(_remainingBonusTime)}',
+                          style: TextStyle(
+                            color: Colors.amber.shade700,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 11,
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  // Action buttons
+                    ],
+                    const SizedBox(height: 12),
+                    // Action buttons
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
@@ -786,6 +848,245 @@ class _MicroJobsViewState extends State<MicroJobsView> {
               ),
             ),
           ),
+        ),
+          // 2.b Watch Quick Ad & Earn Action Card (Featured at top)
+          Card(
+            elevation: 2,
+            color: isDark ? null : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: isDark ? Colors.amber.withOpacity(0.3) : Colors.amber.shade200, width: 1.5),
+            ),
+            child: InkWell(
+              onTap: () async {
+                final int cooldown = await MicroJobService.getQuickAdCooldownRemaining();
+                if (cooldown > 0) {
+                  if (!mounted) return;
+                  _showTopToast(context, 'Please wait $cooldown seconds before watching another ad.', isError: true);
+                  return;
+                }
+                final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'watch_quick_ad');
+                if (!adWatched) return;
+                await MicroJobService.markQuickAdWatched();
+                final String taskId = 'quick_ad_watch_${DateTime.now().millisecondsSinceEpoch}';
+                final bool success = await MicroJobService.rewardUser(taskId, 0.00119);
+                if (success && mounted) {
+                  _showTopToast(context, 'Instant Reward of 50 Coins (+\$0.00119) credited to your balance! 🎉');
+                  _loadStateAndJobs();
+                }
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.play_circle_fill, color: Colors.amber, size: 24),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  'Watch Quick Ad & Earn',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: theme.colorScheme.onSurface,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.shade700,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'INSTANT',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Earn 50 Coins (Auto-converts to \$0.00119)',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '+50 Coins',
+                          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12),
+                        ),
+                        SizedBox(width: 4),
+                        Icon(Icons.arrow_forward_ios, size: 13, color: Colors.amber),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // 2. Perform Tasks & Earn Action Card (Small height, 500+ tasks available)
+          Card(
+            elevation: 2,
+            color: isDark ? null : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
+            ),
+            child: InkWell(
+              onTap: () async {
+                final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_tasks_button');
+                if (!adWatched) return;
+                if (!mounted) return;
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const PerformTasksScreen()),
+                ).then((_) => _loadStateAndJobs());
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.rocket_launch, color: theme.colorScheme.primary, size: 24),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Perform Tasks & Earn',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '500+ tasks available',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.arrow_forward_ios, size: 14, color: theme.colorScheme.onSurfaceVariant),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // AI Model Training Featured Card ($30-$50)
+          Card(
+            elevation: 3,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF4A148C), Color(0xFF6A1B9A)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+              ),
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.auto_awesome, color: Colors.amberAccent, size: 28),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Text(
+                              'AI Model Training Tasks',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                            ),
+                            SizedBox(width: 6),
+                            Icon(Icons.star, color: Colors.amberAccent, size: 14),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Earn \$10.00 – \$50.00 per long-term project with milestone payouts!',
+                          style: TextStyle(color: Colors.white70, fontSize: 11.5, height: 1.3),
+                        ),
+                        const SizedBox(height: 10),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.amberAccent,
+                            foregroundColor: Colors.black,
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () async {
+                            final bool isVpnValid = await VpnEnforcementService.instance.verifyVpnAndProceed(context);
+                            if (!isVpnValid) return;
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const AiTrainingTasksScreen()),
+                            ).then((_) => _loadStateAndJobs());
+                          },
+                          icon: const Icon(Icons.arrow_forward_rounded, size: 16),
+                          label: const Text('Open AI Workspace', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 16),
 
           // Locked Premium Tiers Preview (Urging Level Upgrades)
@@ -800,7 +1101,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
               height: _topBannerAd!.size.height.toDouble(),
               margin: const EdgeInsets.only(bottom: 16),
               child: AdWidget(
-                key: const Key('jobs_top_banner'),
+                key: ObjectKey(_topBannerAd!),
                 ad: _topBannerAd!,
               ),
             ),
@@ -852,68 +1153,6 @@ class _MicroJobsViewState extends State<MicroJobsView> {
             ),
             const SizedBox(height: 10),
           ],
-          
-          // 2. Perform Tasks & Earn Action Card (Small height, 500+ tasks available)
-          Card(
-            elevation: 2,
-            color: isDark ? null : Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: isDark ? Colors.white10 : Colors.grey.shade200, width: 1),
-            ),
-            child: InkWell(
-              onTap: () async {
-                await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_tasks_button');
-                if (!mounted) return;
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const PerformTasksScreen()),
-                ).then((_) => _loadStateAndJobs());
-              },
-              borderRadius: BorderRadius.circular(16),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.primary.withOpacity(0.1),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(Icons.rocket_launch, color: theme.colorScheme.primary, size: 24),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Perform Tasks & Earn',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.bold,
-                              color: theme.colorScheme.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '500+ tasks available',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Icon(Icons.arrow_forward_ios, size: 14, color: theme.colorScheme.onSurfaceVariant),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
 
           // 3. Live Statistics & Payouts Card
           Card(
@@ -1087,7 +1326,7 @@ class _MicroJobsViewState extends State<MicroJobsView> {
               height: _bottomBannerAd!.size.height.toDouble(),
               margin: const EdgeInsets.symmetric(vertical: 8),
               child: AdWidget(
-                key: const Key('jobs_bottom_banner_fixed'),
+                key: ObjectKey(_bottomBannerAd!),
                 ad: _bottomBannerAd!,
               ),
             ),
@@ -1325,4 +1564,135 @@ class _LiveActivity {
   final String message;
   final String timeAgo;
   _LiveActivity(this.message, this.timeAgo);
+}
+
+class _TopToastWidget extends StatefulWidget {
+  final String message;
+  final bool isError;
+  final VoidCallback onDismiss;
+
+  const _TopToastWidget({
+    required this.message,
+    required this.isError,
+    required this.onDismiss,
+  });
+
+  @override
+  State<_TopToastWidget> createState() => _TopToastWidgetState();
+}
+
+class _TopToastWidgetState extends State<_TopToastWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _offsetAnimation;
+  late Animation<double> _fadeAnimation;
+  Timer? _dismissTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+
+    _offsetAnimation = Tween<Offset>(
+      begin: const Offset(0, -1.0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+
+    _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
+
+    _controller.forward();
+
+    _dismissTimer = Timer(const Duration(seconds: 4), () {
+      _dismiss();
+    });
+  }
+
+  void _dismiss() async {
+    _dismissTimer?.cancel();
+    if (mounted) {
+      await _controller.reverse();
+    }
+    widget.onDismiss();
+  }
+
+  @override
+  void dispose() {
+    _dismissTimer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final topPadding = mediaQuery.padding.top + 10.0;
+
+    return Positioned(
+      top: topPadding,
+      left: 16,
+      right: 16,
+      child: SlideTransition(
+        position: _offsetAnimation,
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: Material(
+            color: Colors.transparent,
+            child: GestureDetector(
+              onTap: _dismiss,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: widget.isError ? const Color(0xFFB91C1C) : const Color(0xFF047857),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.35),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                  border: Border.all(
+                    color: widget.isError ? Colors.redAccent.shade100 : const Color(0xFFA7F3D0),
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        widget.isError ? Icons.hourglass_bottom_rounded : Icons.stars_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        widget.message,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13.5,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.close, color: Colors.white70, size: 18),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

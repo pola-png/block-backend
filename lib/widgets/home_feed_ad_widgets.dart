@@ -114,7 +114,7 @@ class HomeNativeAdPostCard extends StatelessWidget {
                 width: double.infinity,
                 height: adHeight,
                 child: AdWidget(
-                  key: ValueKey<int>(slotIndex),
+                  key: ObjectKey(ad),
                   ad: ad,
                 ),
               );

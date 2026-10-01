@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -200,7 +201,7 @@ class _ReferralsScreenState extends State<ReferralsScreen> {
                         backgroundColor: theme.colorScheme.primaryContainer,
                         backgroundImage:
                             (item['avatarUrl'] as String?)?.isNotEmpty == true
-                                ? NetworkImage(item['avatarUrl'] as String)
+                                ? CachedNetworkImageProvider(item['avatarUrl'] as String)
                                 : null,
                         child:
                             (item['avatarUrl'] as String?)?.isNotEmpty == true

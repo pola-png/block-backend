@@ -1,10 +1,12 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:image_picker/image_picker.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../screens/home_screen.dart';
 import '../screens/chat_screen.dart';
@@ -20,6 +22,7 @@ import '../services/push_notification_service.dart';
 import '../models/chat.dart';
 import '../services/chat_message_cache.dart';
 import '../services/ad_gate_service.dart';
+import '../services/user_plan_service.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -32,6 +35,7 @@ class _MainScreenState extends State<MainScreen> {
   static const String _welcomeIntroSeenKey = 'has_seen_welcome_intro_v2';
 
   int _currentIndex = 0;
+  int _homeTabIndex = 0;
   bool _isAuthed = false;
   bool _showBottomNav = true;
   int _unreadChats = 0;
@@ -48,7 +52,7 @@ class _MainScreenState extends State<MainScreen> {
   int _navSwitchCount = 0;
 
   final List<Widget> _screens = [
-    const HomeScreen(),
+    HomeScreen(),
     const ChatScreen(),
     const SizedBox.shrink(),
     const NotificationsScreen(),
@@ -58,6 +62,8 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    _homeTabIndex = HomeScreen.activeTabNotifier.value;
+    HomeScreen.activeTabNotifier.addListener(_onHomeTabChanged);
     _checkAuth();
     _loadBadges();
     _subscribeBadges();
@@ -66,14 +72,20 @@ class _MainScreenState extends State<MainScreen> {
       _maybeShowWelcomeIntro();
       _maybeShowCheaterAlert();
       _initializeNotifications();
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted) {
+          XapZapAdGateService.instance.showAppOpenAdIfAvailable();
+        }
+      });
     });
+  }
 
-    // 1-minute periodic interstitial ad timer
-    _interstitialTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      unawaited(XapZapAdGateService.instance.showInterstitialAd(
-        placement: 'periodic_timer',
-      ));
-    });
+  void _onHomeTabChanged() {
+    if (mounted && _homeTabIndex != HomeScreen.activeTabNotifier.value) {
+      setState(() {
+        _homeTabIndex = HomeScreen.activeTabNotifier.value;
+      });
+    }
   }
 
   void _initializeNotifications() {
@@ -218,10 +230,107 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  Future<bool?> _showExitConfirmationDialog() {
+    final theme = Theme.of(context);
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        backgroundColor: theme.colorScheme.surface,
+        elevation: 8,
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.amber.withOpacity(0.15),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.exit_to_app_rounded, color: Colors.amber, size: 24),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Exit XapZap?',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 19,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Are you sure you want to exit the application?',
+          style: TextStyle(
+            fontSize: 14.5,
+            color: theme.colorScheme.onSurfaceVariant,
+            height: 1.4,
+          ),
+        ),
+        actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        actions: [
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: theme.colorScheme.onSurfaceVariant,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            ),
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('Exit App', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+
+        // 1. If any pushed modal/route exists above MainScreen, pop it first
+        final nav = Navigator.of(context);
+        if (nav.canPop()) {
+          nav.pop();
+          return;
+        }
+
+        // 2. If user is on sub-tab (Chat, Notifications, Profile), switch to Home (tab 0)
+        if (_currentIndex != 0) {
+          setState(() {
+            _currentIndex = 0;
+          });
+          return;
+        }
+
+        // 3. User is on HomeScreen (index 0). Check HomeScreen internal tab controller
+        final homeState = HomeScreen.globalKey.currentState;
+        if (homeState != null && homeState.currentTabIndex != 0) {
+          homeState.selectTab(0);
+          return;
+        }
+
+        // 4. We are at root (HomeScreen For You feed). Confirm exit with user!
+        final bool? shouldExit = await _showExitConfirmationDialog();
+        if (shouldExit == true && mounted) {
+          await SystemNavigator.pop();
+        }
+      },
+      child: LayoutBuilder(
+        builder: (context, constraints) {
         final isDesktop = constraints.maxWidth > 1100;
         return Scaffold(
           extendBody: true,
@@ -291,7 +400,7 @@ class _MainScreenState extends State<MainScreen> {
                         backgroundColor: Colors.grey.shade300,
                         backgroundImage:
                             (_avatarUrl != null && _avatarUrl!.isNotEmpty)
-                                ? NetworkImage(_avatarUrl!)
+                                ? CachedNetworkImageProvider(_avatarUrl!)
                                 : null,
                         child: (_avatarUrl == null || _avatarUrl!.isEmpty)
                             ? const Icon(
@@ -329,7 +438,7 @@ class _MainScreenState extends State<MainScreen> {
               : AnimatedContainer(
                   duration: const Duration(milliseconds: 250),
                   curve: Curves.easeInOut,
-                  height: _showBottomNav
+                  height: (_showBottomNav && !(_currentIndex == 0 && _homeTabIndex == 0))
                       ? 68.0 + MediaQuery.of(context).padding.bottom
                       : 0.0,
                   clipBehavior: Clip.hardEdge,
@@ -413,8 +522,9 @@ class _MainScreenState extends State<MainScreen> {
                 ),
         );
       },
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildAnimatedIndicator(double barWidth) {
     final itemWidth = barWidth / 5;
@@ -704,12 +814,19 @@ class _MainScreenState extends State<MainScreen> {
           ),
         );
       },
-    ).then((type) {
+    ).then((type) async {
       if (type == null) return;
       if (!mounted) return;
-      if (type == UploadType.video || type == UploadType.reel) {
-        _openVideoUpload(type);
-        return;
+      if (type == UploadType.video || type == UploadType.reel || type == UploadType.episode) {
+        final allowed = await UserPlanService.ensureSubscriberToPostMedia(
+          context,
+          mediaType: type == UploadType.episode ? 'episodes' : (type == UploadType.reel ? 'reels' : 'videos'),
+        );
+        if (!allowed || !mounted) return;
+        if (type == UploadType.video || type == UploadType.reel) {
+          _openVideoUpload(type);
+          return;
+        }
       }
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => UploadScreen(type: type)),
@@ -862,6 +979,7 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   void dispose() {
+    HomeScreen.activeTabNotifier.removeListener(_onHomeTabChanged);
     _interstitialTimer?.cancel();
     _badgeSub?.close();
     _banSub?.close();

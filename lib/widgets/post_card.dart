@@ -6,7 +6,7 @@ import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../utils/share_utils.dart';
 
 import '../models/post.dart';
@@ -552,7 +552,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
     return CircleAvatar(
       radius: 20,
       backgroundColor: Colors.grey[200],
-      backgroundImage: NetworkImage(avatarUrl),
+      backgroundImage: CachedNetworkImageProvider(avatarUrl),
     );
   }
 
@@ -1328,7 +1328,7 @@ class _PostCardState extends State<PostCard> with AutomaticKeepAliveClientMixin 
 
   void _precache(String url) {
     if (mounted) {
-      precacheImage(CachedNetworkImageProvider(url), context);
+      precacheImage(CachedNetworkImageProvider(url), context).catchError((_) {});
     }
   }
 

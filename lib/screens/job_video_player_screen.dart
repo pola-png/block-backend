@@ -5,6 +5,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../models/post.dart';
 import '../services/ad_helper.dart';
 import '../services/micro_job_service.dart';
+import '../services/video_cache_service.dart';
 
 class JobVideoPlayerScreen extends StatefulWidget {
   final Post post;
@@ -76,8 +77,7 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
           });
         },
         onAdFailedToLoad: (error) {
-          // Fallback if ad failed to load so user isn't stuck/punished for no fill
-          _startAdCompleted = true;
+          _startAdCompleted = false;
           if (!completer.isCompleted) completer.complete();
         },
       ),
@@ -92,7 +92,7 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
     );
   }
 
-  void _initializeVideo() {
+  Future<void> _initializeVideo() async {
     final videoUrl = widget.post.preferredVideoUrl ?? widget.post.videoUrl;
     if (videoUrl == null || videoUrl.isEmpty) {
       // Fallback mock countdown if video url is empty
@@ -103,25 +103,34 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
       _startTimer();
       return;
     }
-    
-    _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl))
-      ..initialize().then((_) {
-        if (!mounted) return;
-        setState(() {
-          _isInitialized = true;
-          _secondsRemaining = 5;
-        });
-        _controller!.play();
-        _startTimer();
-      }).catchError((error) {
-        debugPrint('Video Player error: $error');
-        // Fallback mock countdown if video fails to play
-        setState(() {
-          _isInitialized = true;
-          _secondsRemaining = 5;
-        });
-        _startTimer();
+
+    final cachedFile = await VideoCacheService.getCachedFileIfAvailable(videoUrl);
+    final ctrl = cachedFile != null
+        ? VideoPlayerController.file(cachedFile)
+        : VideoPlayerController.networkUrl(Uri.parse(videoUrl));
+    _controller = ctrl;
+
+    ctrl.initialize().then((_) {
+      if (!mounted) return;
+      setState(() {
+        _isInitialized = true;
+        _secondsRemaining = 5;
       });
+      ctrl.play();
+      _startTimer();
+    }).catchError((error) {
+      debugPrint('Video Player error: $error');
+      // Fallback mock countdown if video fails to play
+      setState(() {
+        _isInitialized = true;
+        _secondsRemaining = 5;
+      });
+      _startTimer();
+    });
+
+    if (cachedFile == null) {
+      VideoCacheService.warm(videoUrl);
+    }
   }
 
   void _startTimer() {
@@ -173,12 +182,6 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
       setState(() {
         _isPlayingAd = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You must watch both ads fully to get the reward.'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
 
@@ -206,8 +209,7 @@ class _JobVideoPlayerScreenState extends State<JobVideoPlayerScreen> {
           });
         },
         onAdFailedToLoad: (error) {
-          // Fallback if ad failed to load so user isn't stuck/punished for no fill
-          _endAdCompleted = true;
+          _endAdCompleted = false;
           if (!completer.isCompleted) completer.complete();
         },
       ),

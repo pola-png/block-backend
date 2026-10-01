@@ -4,7 +4,6 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/ad_helper.dart';
 import '../services/ad_gate_service.dart';
-import '../services/micro_job_service.dart';
 import 'visit_website_webview_screen.dart';
 
 double getRewardForWebsiteTask(String url) {
@@ -143,7 +142,7 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                   width: _bannerAd2!.size.width.toDouble(),
                   height: _bannerAd2!.size.height.toDouble(),
                   margin: const EdgeInsets.symmetric(vertical: 8),
-                  child: AdWidget(ad: _bannerAd2!),
+                  child: AdWidget(key: ObjectKey(_bannerAd2!), ad: _bannerAd2!),
                 ),
 
               const SizedBox(height: 16),
@@ -235,7 +234,7 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                   width: _bannerAd1!.size.width.toDouble(),
                   height: _bannerAd1!.size.height.toDouble(),
                   margin: const EdgeInsets.symmetric(vertical: 8),
-                  child: AdWidget(ad: _bannerAd1!),
+                  child: AdWidget(key: ObjectKey(_bannerAd1!), ad: _bannerAd1!),
                 )
               else
                 Container(
@@ -256,7 +255,7 @@ class _VisitWebsiteGatewayScreenState extends State<VisitWebsiteGatewayScreen> {
                   width: _bannerAd3!.size.width.toDouble(),
                   height: _bannerAd3!.size.height.toDouble(),
                   margin: const EdgeInsets.symmetric(vertical: 8),
-                  child: AdWidget(ad: _bannerAd3!),
+                  child: AdWidget(key: ObjectKey(_bannerAd3!), ad: _bannerAd3!),
                 ),
             ],
           ),

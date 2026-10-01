@@ -13,6 +13,7 @@ import '../models/upload_type.dart';
 import '../utils/news_seo.dart';
 import 'backend_service.dart';
 import 'storage_service.dart';
+import 'user_plan_service.dart';
 
 class PendingUpload {
   PendingUpload({
@@ -425,6 +426,17 @@ class PendingUploadService {
         final user = await BackendService.getCurrentUser();
         if (user == null) {
           throw Exception('Login required');
+        }
+
+        final bool containsMedia = request.videoPath != null || request.mediaPaths.isNotEmpty;
+        if (containsMedia) {
+          final isAllowed = await UserPlanService.isSubscriberOrAdmin();
+          if (!isAllowed) {
+            upload.status = 'Plan Subscription Required';
+            upload.failed = true;
+            _notify();
+            return;
+          }
         }
 
         String? avatarUrl;

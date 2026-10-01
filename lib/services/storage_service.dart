@@ -112,6 +112,7 @@ class StorageService {
               fileOptions: FileOptions(
                 contentType: mimeType,
                 upsert: true,
+                cacheControl: '31536000, immutable',
               ),
             ).timeout(const Duration(minutes: 3));
 

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../models/post.dart';
 import '../services/backend_service.dart';
@@ -503,7 +504,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 if (url.isNotEmpty) {
                   return CircleAvatar(
                     radius: 24,
-                    backgroundImage: NetworkImage(url),
+                    backgroundImage: CachedNetworkImageProvider(url),
                   );
                 }
                 return CircleAvatar(

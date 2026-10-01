@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/micro_job_service.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../services/ad_helper.dart';
+import '../services/video_cache_service.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 
 class VideoReviewScreen extends StatefulWidget {
@@ -107,27 +108,36 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
             originalUrl.toLowerCase().contains('.mov') ||
             originalUrl.toLowerCase().contains('.m3u8'))) {
       // --- Direct MP4/video URL (admin Level 1 videos) ---
-      _videoController =
-          VideoPlayerController.networkUrl(Uri.parse(originalUrl))
-            ..initialize().then((_) {
-              if (!mounted) return;
-              setState(() {
-                _isVideoLoaded = true;
-                // If video is longer than 20 mins, require 20 mins. Otherwise, watch to the end.
-                final int durationSeconds = _videoController!.value.duration.inSeconds;
-                _secondsRemaining = durationSeconds < 1200 ? durationSeconds : 1200;
-              });
-              _videoController!.play();
-              _startTimer();
-            }).catchError((error) {
-              debugPrint('VideoPlayer error in review screen: $error');
-              if (!mounted) return;
-              setState(() {
-                _isVideoLoaded = true;
-                _secondsRemaining = 60; // Fallback 60-second countdown
-              });
-              _startTimer();
-            });
+      () async {
+        final cachedFile = await VideoCacheService.getCachedFileIfAvailable(originalUrl);
+        final ctrl = cachedFile != null
+            ? VideoPlayerController.file(cachedFile)
+            : VideoPlayerController.networkUrl(Uri.parse(originalUrl));
+        _videoController = ctrl;
+        ctrl.initialize().then((_) {
+          if (!mounted) return;
+          setState(() {
+            _isVideoLoaded = true;
+            // If video is longer than 20 mins, require 20 mins. Otherwise, watch to the end.
+            final int durationSeconds = ctrl.value.duration.inSeconds;
+            _secondsRemaining = durationSeconds < 1200 ? durationSeconds : 1200;
+          });
+          ctrl.play();
+          _startTimer();
+        }).catchError((error) {
+          debugPrint('VideoPlayer error in review screen: $error');
+          if (!mounted) return;
+          setState(() {
+            _isVideoLoaded = true;
+            _secondsRemaining = 60; // Fallback 60-second countdown
+          });
+          _startTimer();
+        });
+
+        if (cachedFile == null) {
+          VideoCacheService.warm(originalUrl);
+        }
+      }();
     } else {
       // --- Generic URL via WebView ---
       _webViewController = WebViewController()
@@ -222,14 +232,6 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
       } catch (_) {}
     }
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Ad Intermission: Video paused for rewarded ad placement.'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-    }
 
     // 2. Load and show mid-roll rewarded ad
     final completer = Completer<void>();
@@ -298,6 +300,15 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
 
     // Show end-roll rewarded ad before payout completion
     await _loadAndShowEndAd();
+
+    if (!_startAdCompleted || !_endAdCompleted) {
+      if (mounted) {
+        setState(() {
+          _isSavingReview = false;
+        });
+      }
+      return;
+    }
 
     try {
       final user = Supabase.instance.client.auth.currentUser;
@@ -627,7 +638,7 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
           });
         },
         onAdFailedToLoad: (error) {
-          _startAdCompleted = true;
+          _startAdCompleted = false;
           if (!completer.isCompleted) completer.complete();
         },
       ),
@@ -664,7 +675,7 @@ class _VideoReviewScreenState extends State<VideoReviewScreen> {
           });
         },
         onAdFailedToLoad: (error) {
-          _endAdCompleted = true;
+          _endAdCompleted = false;
           if (!completer.isCompleted) completer.complete();
         },
       ),

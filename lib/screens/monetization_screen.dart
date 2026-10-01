@@ -15,7 +15,7 @@ class MonetizationScreen extends StatefulWidget {
 }
 
 class _MonetizationScreenState extends State<MonetizationScreen> {
-  static const double _minimumPayoutUsd = 100.0;
+  static const double _minimumPayoutUsd = 30.0;
   static const int _payoutDayOfMonth = 27;
 
   bool _loading = true;
@@ -1079,7 +1079,12 @@ class _MonetizationScreenState extends State<MonetizationScreen> {
   double _parseCreatorBalance(dynamic row) {
     if (row == null) return 0;
     final data = row.data as Map<String, dynamic>;
-    return _toDouble(data['balanceUsd']);
+    return _toDouble(
+      data['available_balance_usd'] ??
+      data['balance_usd'] ??
+      data['availableBalanceUsd'] ??
+      data['balanceUsd'],
+    );
   }
 
   double _toDouble(dynamic value) {

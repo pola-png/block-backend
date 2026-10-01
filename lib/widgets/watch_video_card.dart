@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../models/post.dart';
 import '../utils/format_utils.dart';
 import '../services/backend_service.dart';
@@ -257,12 +258,12 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
                 size: 22,
                 color: theme.colorScheme.onSurfaceVariant,
               )
-            : Image.network(
-                avatar,
+            : CachedNetworkImage(
+                imageUrl: avatar,
                 fit: BoxFit.cover,
                 width: 40,
                 height: 40,
-                errorBuilder: (context, error, stackTrace) => Icon(
+                errorWidget: (context, url, error) => Icon(
                   Icons.person,
                   size: 22,
                   color: theme.colorScheme.onSurfaceVariant,
@@ -275,10 +276,20 @@ class _WatchVideoCardState extends State<WatchVideoCard> {
   Widget _buildThumbnailArea(ThemeData theme, String? thumb) {
     final aspect = 16 / 9;
     final image = thumb != null && thumb.isNotEmpty
-        ? Image.network(
-            thumb,
+        ? CachedNetworkImage(
+            imageUrl: thumb,
             fit: BoxFit.cover,
             width: double.infinity,
+            placeholder: (context, url) => Container(
+              color: theme.colorScheme.surfaceContainerHighest,
+              alignment: Alignment.center,
+              child: const CircularProgressIndicator(strokeWidth: 2),
+            ),
+            errorWidget: (context, url, error) => Container(
+              color: theme.colorScheme.surfaceContainerHighest,
+              alignment: Alignment.center,
+              child: const Icon(Icons.play_circle_fill, size: 56),
+            ),
           )
         : Container(
             color: theme.colorScheme.surfaceContainerHighest,

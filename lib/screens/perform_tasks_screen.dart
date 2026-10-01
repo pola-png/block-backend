@@ -11,12 +11,12 @@ import '../services/app_review_service.dart';
 import '../services/backend_service.dart';
 import '../services/ad_helper.dart';
 import '../services/ad_gate_service.dart';
-import 'withdrawal_settings_screen.dart';
+import '../services/vpn_enforcement_service.dart';
 import 'level_upgrades_screen.dart';
-import 'submit_video_campaign_screen.dart';
 import 'video_review_screen.dart';
-import 'monetization_screen.dart';
 import 'visit_website_gateway_screen.dart';
+import 'ai_training_tasks_screen.dart';
+import '../widgets/ad_free_subscription_dialog.dart';
 
 class PerformTasksScreen extends StatefulWidget {
   const PerformTasksScreen({super.key});
@@ -53,13 +53,14 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this, initialIndex: 0);
+    _tabController = TabController(length: 4, vsync: this, initialIndex: 0);
     BackendService.adminModeOverride.addListener(_onAdminOverrideChanged);
     _loadStateAndJobs();
     _startCooldownCountdown();
     _loadBannerAd();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAdAwarenessConsent();
+      AdFreeSubscriptionDialog.checkAndShowDailyPopup(context);
     });
   }
 
@@ -97,14 +98,13 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'XapZap provides high cash rewards for completing tasks. To maintain these high payouts and support the platform, short ads and rewarded videos are shown when performing tasks.',
+                  'XapZap provides high cash rewards for completing tasks. Complete tasks accurately to unlock payouts.',
                   style: TextStyle(fontSize: 13, height: 1.4, color: isDark ? Colors.white70 : Colors.grey.shade800),
                 ),
                 const SizedBox(height: 12),
                 Text(
                   '• Every completed task credits real earnings to your balance.\n'
-                  '• Watching short sponsor ads helps keep payout rates high (\$0.20 - \$1.50+).\n'
-                  '• By proceeding, you agree to support the app through ads.',
+                  '• Complete tasks accurately to maximize your daily earnings.',
                   style: TextStyle(fontSize: 12, height: 1.5, color: isDark ? Colors.white54 : Colors.grey.shade600),
                 ),
               ],
@@ -340,6 +340,28 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
     return double.parse(base.toStringAsFixed(2));
   }
 
+  void _showTopToast(BuildContext context, String message, {bool isError = false}) {
+    final overlayState = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlayState == null) return;
+
+    late OverlayEntry overlayEntry;
+    overlayEntry = OverlayEntry(
+      builder: (context) {
+        return _TopToastWidget(
+          message: message,
+          isError: isError,
+          onDismiss: () {
+            if (overlayEntry.mounted) {
+              overlayEntry.remove();
+            }
+          },
+        );
+      },
+    );
+
+    overlayState.insert(overlayEntry);
+  }
+
   Future<void> _completeAppReviewFlow() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -371,6 +393,8 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
     );
 
     if (confirmed == true) {
+      final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'starter_app_review');
+      if (!adWatched) return;
       final success = await MicroJobService.rewardUser('starter_app_review', 0.20);
       if (success) {
         setState(() {
@@ -395,6 +419,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
           labelColor: theme.colorScheme.onSurface,
           unselectedLabelColor: theme.colorScheme.onSurfaceVariant,
           tabs: const [
+            Tab(text: 'AI Training (\$10-\$50)', icon: Icon(Icons.auto_awesome)),
             Tab(text: 'Website Visit Jobs', icon: Icon(Icons.language)),
             Tab(text: 'App Review', icon: Icon(Icons.star_rate_rounded)),
             Tab(text: 'Video Jobs', icon: Icon(Icons.video_library)),
@@ -409,6 +434,7 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                   child: TabBarView(
                     controller: _tabController,
                     children: [
+                      _buildAiTrainingJobsTab(theme),
                       _buildWebsiteJobsTab(theme),
                       _buildAppReviewTab(theme),
                       _buildVideoJobsTab(theme),
@@ -420,64 +446,181 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                     alignment: Alignment.center,
                     width: _bannerAd!.size.width.toDouble(),
                     height: _bannerAd!.size.height.toDouble(),
-                    child: AdWidget(ad: _bannerAd!),
+                    child: AdWidget(key: ObjectKey(_bannerAd!), ad: _bannerAd!),
                   ),
               ],
             ),
     );
   }
 
+  Widget _buildAiTrainingJobsTab(ThemeData theme) {
+    return const AiTrainingTasksScreen();
+  }
+
+  Widget _buildAiProjectCard({
+    required String title,
+    required String description,
+    required String payout,
+    required String duration,
+    required String milestones,
+    required Color color,
+    required IconData icon,
+  }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: color.withOpacity(0.4), width: 1.5),
+      ),
+      color: isDark ? color.withOpacity(0.08) : color.withOpacity(0.04),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      Text(
+                        '$duration • $milestones',
+                        style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    payout,
+                    style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.green, fontSize: 15),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              description,
+              style: TextStyle(fontSize: 12.5, color: theme.colorScheme.onSurfaceVariant, height: 1.35),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: color,
+                  side: BorderSide(color: color),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const AiTrainingTasksScreen()),
+                  ).then((_) => _loadStateAndJobs());
+                },
+                icon: const Icon(Icons.arrow_forward, size: 16),
+                label: const Text('Start Project in AI Workspace', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildVideoJobsTab(ThemeData theme) {
     final textTheme = theme.textTheme;
-    final isUnlocked = _appReviewCompleted;
+    const isUnlocked = true; // Watch ad tasks are always unlocked for all users
 
     return RefreshIndicator(
       onRefresh: _loadStateAndJobs,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (!isUnlocked) ...[
-            Card(
-              color: theme.colorScheme.errorContainer.withOpacity(0.2),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: theme.colorScheme.error.withOpacity(0.3)),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    const Icon(Icons.lock_outline, size: 36, color: Colors.orange),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'All Tasks Locked!',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'As a new user, you must submit an App Review first before you can unlock and perform any other tasks.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontSize: 13),
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: theme.colorScheme.primary,
-                        foregroundColor: theme.colorScheme.onPrimary,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
-                      onPressed: () {
-                        _tabController.animateTo(1); // Go to App Review tab
-                      },
-                      icon: const Icon(Icons.star_rate_rounded, size: 18),
-                      label: const Text('Go to App Review Tab', style: TextStyle(fontWeight: FontWeight.bold)),
-                    ),
-                  ],
-                ),
-              ),
+          Card(
+            margin: const EdgeInsets.only(bottom: 16),
+            color: theme.brightness == Brightness.dark ? Colors.grey.shade900 : Colors.amber.shade50,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: Colors.amber.shade400, width: 1.5),
             ),
-            const SizedBox(height: 16),
-          ],
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              leading: Container(
+                width: 44,
+                height: 44,
+                decoration: const BoxDecoration(
+                  color: Colors.amber,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 28),
+              ),
+              title: const Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      'Watch Quick Ad',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Icon(Icons.bolt, color: Colors.amber, size: 18),
+                ],
+              ),
+              subtitle: const Text('Earn 50 Coins (Auto-converts to \$0.00119)'),
+              trailing: const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text('+50 Coins', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 13)),
+                  SizedBox(height: 2),
+                  Icon(Icons.arrow_forward_ios, size: 12, color: Colors.amber),
+                ],
+              ),
+              onTap: () async {
+                final int cooldown = await MicroJobService.getQuickAdCooldownRemaining();
+                if (cooldown > 0) {
+                  if (!mounted) return;
+                  _showTopToast(context, 'Please wait $cooldown seconds before watching another ad.', isError: true);
+                  return;
+                }
+                final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'watch_quick_ad');
+                if (!adWatched) return;
+                await MicroJobService.markQuickAdWatched();
+                final String taskId = 'quick_ad_watch_${DateTime.now().millisecondsSinceEpoch}';
+                final bool success = await MicroJobService.rewardUser(taskId, 0.00119);
+                if (success && mounted) {
+                  _showTopToast(context, 'Instant Reward of 50 Coins (+\$0.00119) credited to your balance! 🎉');
+                  _loadStateAndJobs();
+                }
+              },
+            ),
+          ),
           Text('Video Watch Jobs', style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 10),
           if (_adminVideos.isEmpty)
@@ -591,7 +734,8 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                           );
                           return;
                         }
-                        await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_video');
+                        final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_video');
+                        if (!adWatched) return;
                         if (!mounted) return;
                         final syntheticCampaign = <String, dynamic>{
                           'id': video.id,
@@ -737,7 +881,8 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                         );
                         return;
                       }
-                      await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_review');
+                      final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_review');
+                      if (!adWatched) return;
                       if (!mounted) return;
                       Navigator.push(
                         context,
@@ -905,7 +1050,10 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                           );
                           return;
                         }
-                        await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_website');
+                        final bool isVpnValid = await VpnEnforcementService.instance.verifyVpnAndProceed(context);
+                        if (!isVpnValid) return;
+                        final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'perform_task_website');
+                        if (!adWatched) return;
                         if (!mounted) return;
                         Navigator.push(
                           context,
@@ -1115,12 +1263,23 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
                       onPressed: (_reviewProofPath == null || _isSubmittingProof)
                           ? null
                           : () async {
+                              final bool isVpnValid = await VpnEnforcementService.instance.verifyVpnAndProceed(context);
+                              if (!isVpnValid) return;
                               setState(() {
                                 _isSubmittingProof = true;
                               });
                               // Simulate verification upload
                               await Future.delayed(const Duration(seconds: 2));
-                               final success = await MicroJobService.rewardUser('starter_app_review', 1.00);
+                              final bool adWatched = await XapZapAdGateService.instance.showRewardedAd(placement: 'app_review_proof');
+                              if (!adWatched) {
+                                if (mounted) {
+                                  setState(() {
+                                    _isSubmittingProof = false;
+                                  });
+                                }
+                                return;
+                              }
+                              final success = await MicroJobService.rewardUser('starter_app_review', 1.00);
                                final currentUser = await BackendService.getCurrentUser();
                                if (success && currentUser != null) {
                                  try {
@@ -1165,6 +1324,137 @@ class _PerformTasksScreenState extends State<PerformTasksScreen> with SingleTick
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TopToastWidget extends StatefulWidget {
+  final String message;
+  final bool isError;
+  final VoidCallback onDismiss;
+
+  const _TopToastWidget({
+    required this.message,
+    required this.isError,
+    required this.onDismiss,
+  });
+
+  @override
+  State<_TopToastWidget> createState() => _TopToastWidgetState();
+}
+
+class _TopToastWidgetState extends State<_TopToastWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _offsetAnimation;
+  late Animation<double> _fadeAnimation;
+  Timer? _dismissTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+
+    _offsetAnimation = Tween<Offset>(
+      begin: const Offset(0, -1.0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+
+    _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
+
+    _controller.forward();
+
+    _dismissTimer = Timer(const Duration(seconds: 4), () {
+      _dismiss();
+    });
+  }
+
+  void _dismiss() async {
+    _dismissTimer?.cancel();
+    if (mounted) {
+      await _controller.reverse();
+    }
+    widget.onDismiss();
+  }
+
+  @override
+  void dispose() {
+    _dismissTimer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final topPadding = mediaQuery.padding.top + 10.0;
+
+    return Positioned(
+      top: topPadding,
+      left: 16,
+      right: 16,
+      child: SlideTransition(
+        position: _offsetAnimation,
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: Material(
+            color: Colors.transparent,
+            child: GestureDetector(
+              onTap: _dismiss,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: widget.isError ? const Color(0xFFB91C1C) : const Color(0xFF047857),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.35),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                  border: Border.all(
+                    color: widget.isError ? Colors.redAccent.shade100 : const Color(0xFFA7F3D0),
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        widget.isError ? Icons.hourglass_bottom_rounded : Icons.stars_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        widget.message,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13.5,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.close, color: Colors.white70, size: 18),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

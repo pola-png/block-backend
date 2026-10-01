@@ -7,10 +7,12 @@ import 'package:xapzap/models/database_models.dart'
 import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:video_player/video_player.dart';
+import '../services/video_cache_service.dart';
 
 import '../widgets/voice_note_player.dart';
 import '../widgets/voice_recorder.dart';
@@ -595,10 +597,10 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
       ),
       clipBehavior: Clip.antiAlias,
       child: hasAvatar
-          ? Image.network(
-              avatarUrl,
+          ? CachedNetworkImage(
+              imageUrl: avatarUrl,
               fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) {
+              errorWidget: (context, url, error) {
                 return const Icon(Icons.person, color: Colors.white, size: 20);
               },
             )
@@ -977,12 +979,12 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
         borderRadius: BorderRadius.circular(12),
         child: GestureDetector(
           onTap: () => _openImagePreview(message.mediaUrl!),
-          child: Image.network(
-            message.mediaUrl!,
+          child: CachedNetworkImage(
+            imageUrl: message.mediaUrl!,
             width: 220,
             height: 220,
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _buildBrokenMediaTile('Image'),
+            errorWidget: (_, __, ___) => _buildBrokenMediaTile('Image'),
           ),
         ),
       );
@@ -1000,7 +1002,7 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
             image: (message.thumbnailUrl != null &&
                     message.thumbnailUrl!.isNotEmpty)
                 ? DecorationImage(
-                    image: NetworkImage(message.thumbnailUrl!),
+                    image: CachedNetworkImageProvider(message.thumbnailUrl!),
                     fit: BoxFit.cover,
                   )
                 : null,
@@ -2288,7 +2290,16 @@ class _IndividualChatScreenState extends State<IndividualChatScreen>
         return Dialog(
           insetPadding: const EdgeInsets.all(16),
           child: InteractiveViewer(
-            child: Image.network(url, fit: BoxFit.contain),
+            child: CachedNetworkImage(
+              imageUrl: url,
+              fit: BoxFit.contain,
+              placeholder: (_, __) => const Center(
+                child: CircularProgressIndicator(),
+              ),
+              errorWidget: (_, __, ___) => const Center(
+                child: Icon(Icons.broken_image, size: 48),
+              ),
+            ),
           ),
         );
       },
@@ -2340,11 +2351,23 @@ class _ChatVideoPreviewScreenState extends State<_ChatVideoPreviewScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-    _initFuture = _controller!.initialize().then((_) {
-      _controller!.play();
+    _initPlayer();
+  }
+
+  Future<void> _initPlayer() async {
+    final cached = await VideoCacheService.getCachedFileIfAvailable(widget.url);
+    final ctrl = cached != null
+        ? VideoPlayerController.file(cached)
+        : VideoPlayerController.networkUrl(Uri.parse(widget.url));
+    _controller = ctrl;
+    _initFuture = ctrl.initialize().then((_) {
+      ctrl.play();
       if (mounted) setState(() {});
     });
+    if (cached == null) {
+      VideoCacheService.warm(widget.url);
+    }
+    if (mounted) setState(() {});
   }
 
   @override

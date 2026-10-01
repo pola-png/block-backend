@@ -43,6 +43,7 @@ import 'services/realtime_gateway.dart';
 import 'services/device_mode_service.dart';
 import 'services/navigation_service.dart';
 import 'services/ad_gate_service.dart';
+import 'services/global_video_manager.dart';
 import 'providers/theme_provider.dart';
 import 'theme/app_theme.dart';
 
@@ -110,8 +111,7 @@ Future<void> _bootstrapCriticalServices() async {
           ),
         );
       }
-      // Wait for the App Open Ad to be preloaded (up to 2.5 seconds timeout inside init)
-      await XapZapAdGateService.instance.init();
+      unawaited(XapZapAdGateService.instance.init());
     } catch (_) {}
   }
 }
@@ -146,10 +146,6 @@ Future<void> _bootstrapBackgroundServices() async {
   }
   unawaited(PostViewRetryQueue.flushPending());
   unawaited(BackendService.processNotificationQueue(limit: 5));
-  // Start preloading the home feeds in the background so that
-  // the HomeScreen can render instantly when opened.
-  // On web we skip this to reduce first-load work and rely on
-  // HomeScreen to fetch lazily when it mounts.
   if (!kIsWeb) {
     FeedPrefetcher.preloadHomeFeeds();
     unawaited(ChatPrefetchService.preloadInbox());
@@ -173,7 +169,12 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForAppUpdate();
-      XapZapAdGateService.instance.showAppOpenAdIfAvailable();
+      // Safely delay App Open Ad to allow the main view & navigator to stabilize
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          XapZapAdGateService.instance.showAppOpenAdIfAvailable();
+        }
+      });
     });
   }
 
@@ -187,7 +188,9 @@ class _XapZapAppState extends State<XapZapApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(PostViewRetryQueue.flushPending());
-      XapZapAdGateService.instance.showAppOpenAdIfAvailable();
+      XapZapAdGateService.instance.showAppOpenAdIfAvailable(isForegroundResume: true);
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      GlobalVideoManager.releaseActive();
     }
   }
 

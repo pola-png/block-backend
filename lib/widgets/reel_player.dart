@@ -4,8 +4,9 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:video_player/video_player.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../models/post.dart';
 import '../screens/comment_screen.dart';
 import '../screens/profile_screen.dart';
@@ -789,7 +790,19 @@ class _UpNextEpisodeCard extends StatelessWidget {
               width: 72,
               height: 96,
               child: post.thumbnailUrl != null && post.thumbnailUrl!.isNotEmpty
-                  ? Image.network(post.thumbnailUrl!, fit: BoxFit.cover)
+                  ? CachedNetworkImage(
+                      imageUrl: post.thumbnailUrl!,
+                      fit: BoxFit.cover,
+                      errorWidget: (context, url, error) => Container(
+                        color: Colors.white.withOpacity(0.08),
+                        alignment: Alignment.center,
+                        child: const Icon(
+                          Icons.play_circle_fill_rounded,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                    )
                   : Container(
                       color: Colors.white.withOpacity(0.08),
                       alignment: Alignment.center,

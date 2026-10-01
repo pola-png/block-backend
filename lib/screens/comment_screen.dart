@@ -4,7 +4,8 @@ import 'dart:async';
 import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
 import '../models/post.dart';
@@ -420,7 +421,7 @@ class _CommentScreenState extends State<CommentScreen> {
                       )
                     : CircleAvatar(
                         radius: 20,
-                        backgroundImage: NetworkImage(url),
+                        backgroundImage: CachedNetworkImageProvider(url),
                       ),
               );
             },
@@ -599,7 +600,7 @@ class _CommentScreenState extends State<CommentScreen> {
                   backgroundColor: theme.colorScheme.surfaceContainerHighest,
                   backgroundImage: _currentUserAvatarUrl != null &&
                           _currentUserAvatarUrl!.isNotEmpty
-                      ? NetworkImage(_currentUserAvatarUrl!)
+                      ? CachedNetworkImageProvider(_currentUserAvatarUrl!)
                       : null,
                   child: (_currentUserAvatarUrl == null ||
                           _currentUserAvatarUrl!.isEmpty)

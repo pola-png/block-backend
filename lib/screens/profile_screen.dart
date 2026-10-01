@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:xapzap/models/database_models.dart' as aw;
 import '../services/backend_service.dart';
 import '../services/storage_service.dart';
@@ -750,11 +751,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     bottom: Radius.circular(24),
                   ),
                   child: coverUrl != null && coverUrl.isNotEmpty
-                      ? Image.network(
-                          coverUrl,
+                      ? CachedNetworkImage(
+                          imageUrl: coverUrl,
                           fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Container(
+                          errorWidget: (context, url, error) => Container(
                             color: coverFallback,
                           ),
                         )
@@ -776,10 +776,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   child: ClipOval(
                     child: avatar != null && avatar.isNotEmpty
-                        ? Image.network(
-                            avatar,
+                        ? CachedNetworkImage(
+                            imageUrl: avatar,
                             fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) =>
+                            errorWidget: (context, url, error) =>
                                 _buildAvatarFallback(displayName),
                           )
                         : _buildAvatarFallback(displayName),

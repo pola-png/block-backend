@@ -6,11 +6,12 @@ class AdHelper {
   static const String appId = 'ca-app-pub-6927256363821778~7392700976';
 
   static String get appOpen {
+    final raw = dotenv.env['XAPZAP_APP_OPEN_AD_UNIT_ID']?.trim();
+    if (raw != null && raw.isNotEmpty) return raw;
     if (kDebugMode) {
       return 'ca-app-pub-3940256099942544/9257395921';
     }
-    final raw = dotenv.env['XAPZAP_APP_OPEN_AD_UNIT_ID']?.trim();
-    return raw == null || raw.isEmpty ? 'ca-app-pub-6927256363821778/7137550107' : raw;
+    return 'ca-app-pub-6927256363821778/7137550107';
   }
 
   static String get banner => kDebugMode

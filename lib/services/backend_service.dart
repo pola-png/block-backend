@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:crypto/crypto.dart';
 import '../models/database_models.dart' as models;
-import '../models/database_models.dart' show Query, ID, DatabaseException, Client, Account, Functions, Storage, InputFile, Permission, Role, Messaging, enums;
+import '../models/database_models.dart' show Query, ID, DatabaseException, Client, Functions, Storage, Permission, Role, Messaging, enums;
 import 'package:http/http.dart' as http;
 import 'micro_job_service.dart';
 import 'package:flutter/foundation.dart';
@@ -2601,7 +2601,13 @@ class BackendService {
     );
   }
 
-  static Future<models.Row?> getProfileByUsername(String username) async {
+  static Future<models.Row?> getProfileByUsername(String username, {bool forceRefresh = false}) async {
+    final key = username.toLowerCase().trim();
+    if (key.isEmpty) return null;
+    if (!forceRefresh) {
+      final cached = _usernameProfileCache[key];
+      if (cached != null) return cached;
+    }
     try {
       final res = await _tables.listRows(
         databaseId: databaseId,
@@ -2609,7 +2615,9 @@ class BackendService {
         queries: <String>[Query.equal('username', username), Query.limit(1)],
       );
       if (res.rows.isEmpty) return null;
-      return res.rows.first;
+      final row = res.rows.first;
+      cacheProfile(row);
+      return row;
     } catch (_) {
       return null;
     }
@@ -4133,12 +4141,30 @@ class BackendService {
 
 
   // Profiles
-  static Future<models.Row?> getProfileByUserId(String userId) async {
-    final cached = _profileCache[userId];
-    if (cached != null) {
-      final username = cached.data['username'] as String?;
-      if (username != null && username.trim().isNotEmpty) {
-        _cacheProfilePreviewFromData(cached.$id, cached.data);
+  static final Map<String, models.Row> _profileCache = <String, models.Row>{};
+  static final Map<String, models.Row> _usernameProfileCache = <String, models.Row>{};
+
+  static void cacheProfile(models.Row row) {
+    final uid = row.$id;
+    if (uid.isNotEmpty) _profileCache[uid] = row;
+    final userId = row.data['userId']?.toString();
+    if (userId != null && userId.isNotEmpty) {
+      _profileCache[userId] = row;
+    }
+    final username = row.data['username']?.toString();
+    if (username != null && username.trim().isNotEmpty) {
+      _usernameProfileCache[username.toLowerCase().trim()] = row;
+    }
+    _cacheProfilePreviewFromData(row.$id, row.data);
+  }
+
+  static Future<models.Row?> getProfileByUserId(String userId, {bool forceRefresh = false}) async {
+    final safeId = userId.trim();
+    if (safeId.isEmpty) return null;
+
+    if (!forceRefresh) {
+      final cached = _profileCache[safeId];
+      if (cached != null) {
         return cached;
       }
     }
@@ -4146,42 +4172,38 @@ class BackendService {
     // The profiles table primary key is the Supabase Auth UUID.
     // If the caller passed an Appwrite-style hex ID (not a UUID), resolve the
     // real UUID from the current Supabase Auth session instead.
-    String resolvedId = userId;
-    if (!RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(userId)) {
+    String resolvedId = safeId;
+    if (!RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(safeId)) {
       final supabaseUid = Supabase.instance.client.auth.currentUser?.id;
       if (supabaseUid != null && supabaseUid.isNotEmpty) {
         resolvedId = supabaseUid;
-        // Check cache under the resolved ID too.
-        final cachedByUuid = _profileCache[resolvedId];
-        if (cachedByUuid != null) {
-          _profileCache[userId] = cachedByUuid; // alias
-          return cachedByUuid;
+        if (!forceRefresh) {
+          final cachedByUuid = _profileCache[resolvedId];
+          if (cachedByUuid != null) {
+            _profileCache[safeId] = cachedByUuid; // alias
+            return cachedByUuid;
+          }
         }
       }
     }
 
     try {
       final row = await getRow(profilesCollectionId, resolvedId);
-      _profileCache[resolvedId] = row;
-      if (resolvedId != userId) _profileCache[userId] = row; // alias Appwrite ID
-      _cacheProfilePreviewFromData(row.$id, row.data);
-      if (_currentUserCache != null && userId == _currentUserCache!.$id) {
+      cacheProfile(row);
+      if (resolvedId != safeId) _profileCache[safeId] = row; // alias Appwrite ID
+      if (_currentUserCache != null && safeId == _currentUserCache!.$id) {
         unawaited(_saveProfileToPrefs(row));
       }
       return row;
-    } catch (e, stack) {
+    } catch (e) {
       debugPrint('Error loading profile for $userId (resolved $resolvedId): $e');
-      debugPrint(stack.toString());
-      return null;
+      return _profileCache[resolvedId] ?? _profileCache[safeId];
     }
   }
 
-
   static models.Row? getCachedProfileByUserId(String userId) {
-    return _profileCache[userId];
+    return _profileCache[userId.trim()];
   }
-
-  static final Map<String, models.Row> _profileCache = <String, models.Row>{};
 
   static models.Row? peekCachedProfileByUserId(String userId) {
     final safeUserId = userId.trim();
@@ -4618,8 +4640,16 @@ class TablesDB {
     required String rowId,
   }) async {
     final mapped = _mapTable(tableId);
+    if (mapped == 'profiles') {
+      final cached = BackendService.getCachedProfileByUserId(rowId);
+      if (cached != null) return cached;
+    }
     final res = await Supabase.instance.client.from(mapped).select().eq('id', rowId).single();
-    return _mapItemToRow(mapped, res);
+    final row = _mapItemToRow(mapped, res);
+    if (mapped == 'profiles') {
+      BackendService.cacheProfile(row);
+    }
+    return row;
   }
 
   Future<models.Row> updateRow({
@@ -4646,7 +4676,11 @@ class TablesDB {
         .eq('id', rowId)
         .select()
         .single();
-    return _mapItemToRow(mapped, res);
+    final row = _mapItemToRow(mapped, res);
+    if (mapped == 'profiles') {
+      BackendService.cacheProfile(row);
+    }
+    return row;
   }
 
   Future<models.Row> createRow({
@@ -4671,7 +4705,11 @@ class TablesDB {
     }
 
     final res = await Supabase.instance.client.from(mapped).insert(cleanData).select().single();
-    return _mapItemToRow(mapped, res);
+    final row = _mapItemToRow(mapped, res);
+    if (mapped == 'profiles') {
+      BackendService.cacheProfile(row);
+    }
+    return row;
   }
 
   Future<dynamic> deleteRow({

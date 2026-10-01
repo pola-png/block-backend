@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../models/news_article.dart';
 
 class NewsDetailScreen extends StatelessWidget {
@@ -171,10 +172,10 @@ class NewsDetailScreen extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    imgUrl,
+                  child: CachedNetworkImage(
+                    imageUrl: imgUrl,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
                   ),
                 ),
               ),
@@ -213,10 +214,10 @@ class NewsDetailScreen extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
                 child: AspectRatio(
                   aspectRatio: 16 / 10,
-                  child: Image.network(
-                    img,
+                  child: CachedNetworkImage(
+                    imageUrl: img,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
                   ),
                 ),
               ),
@@ -268,10 +269,10 @@ class NewsDetailScreen extends StatelessWidget {
                   ? Stack(
                       fit: StackFit.expand,
                       children: [
-                        Image.network(
-                          thumb,
+                        CachedNetworkImage(
+                          imageUrl: thumb,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
+                          errorWidget: (_, __, ___) => Container(
                             color: primaryColor.withOpacity(0.05),
                           ),
                         ),

@@ -22,7 +22,7 @@ class RewardedAdPreloadService {
 
   static Future<void> warmup() async {
     if (kIsWeb) return;
-    await ensureUnit(AdHelper.rewardedReelsUnit);
+    await ensureUnit(AdHelper.rewarded);
   }
 
   static Future<void> ensureUnit(String unitId) async {

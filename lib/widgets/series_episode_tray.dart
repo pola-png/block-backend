@@ -1,5 +1,6 @@
 import 'package:xapzap/models/database_models.dart' as aw;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../models/post.dart';
 import '../services/backend_service.dart';
@@ -231,9 +232,22 @@ class _SeriesEpisodeTrayState extends State<SeriesEpisodeTray> {
                                   height: 94,
                                   child: item.post.thumbnailUrl != null &&
                                           item.post.thumbnailUrl!.isNotEmpty
-                                      ? Image.network(
-                                          item.post.thumbnailUrl!,
+                                      ? CachedNetworkImage(
+                                          imageUrl: item.post.thumbnailUrl!,
                                           fit: BoxFit.cover,
+                                          errorWidget: (context, url, error) => Container(
+                                            color: widget.compact
+                                                ? Colors.white.withOpacity(0.08)
+                                                : theme.colorScheme
+                                                    .surfaceContainerHighest,
+                                            alignment: Alignment.center,
+                                            child: Icon(
+                                              Icons.play_circle_fill_rounded,
+                                              color: widget.compact
+                                                  ? Colors.white
+                                                  : theme.colorScheme.primary,
+                                            ),
+                                          ),
                                         )
                                       : Container(
                                           color: widget.compact

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/backend_service.dart';
 import '../services/micro_job_service.dart';
+import '../widgets/animated_balance_text.dart';
 
 class LevelUpgradesScreen extends StatefulWidget {
   const LevelUpgradesScreen({super.key});
@@ -21,6 +23,35 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
   Duration _remainingBonusTime = Duration.zero;
   bool _isEligibleForBonus = false;
 
+  bool _isAdFree = false;
+  String _adFreePlanName = '';
+  DateTime? _adFreeExpiryDate;
+  Duration _remainingAdFreeTime = Duration.zero;
+  Timer? _adFreeTimer;
+
+  final List<Map<String, dynamic>> _adFreePlans = [
+    {
+      'title': '1 Week Ad-Free Pass',
+      'price': 1.60,
+      'durationDays': 7,
+      'period': '7 Days',
+      'badge': 'POPULAR',
+      'badgeColor': Colors.blue,
+      'gradient': const [Color(0xFF1E88E5), Color(0xFF42A5F5)],
+      'icon': Icons.bolt,
+    },
+    {
+      'title': '1 Month Ad-Free Pass',
+      'price': 4.90,
+      'durationDays': 30,
+      'period': '30 Days',
+      'badge': 'BEST VALUE (SAVE 35%)',
+      'badgeColor': Colors.amber,
+      'gradient': const [Color(0xFFFF8F00), Color(0xFFFFB300)],
+      'icon': Icons.stars_rounded,
+    },
+  ];
+
   final InAppPurchase _inAppPurchase = InAppPurchase.instance;
   late StreamSubscription<List<PurchaseDetails>> _subscription;
   List<ProductDetails> _products = [];
@@ -32,6 +63,7 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
     super.initState();
     BackendService.adminModeOverride.addListener(_loadUserLevelAndDate);
     _loadUserLevelAndDate();
+    _loadAdFreeStatus();
     
     final Stream<List<PurchaseDetails>> purchaseUpdated = _inAppPurchase.purchaseStream;
     _subscription = purchaseUpdated.listen((purchaseDetailsList) {
@@ -42,6 +74,76 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
       debugPrint("Purchase stream error: $error");
     });
     _loadProducts();
+  }
+
+  Future<void> _loadAdFreeStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      int expiry = prefs.getInt('ad_free_expiry_timestamp') ?? 0;
+      String planName = prefs.getString('ad_free_active_plan') ?? 'Ad-Free Pass';
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // Authoritative verification against Supabase user profile if local cache expired or empty
+      if (expiry <= now) {
+        final user = Supabase.instance.client.auth.currentUser;
+        if (user != null) {
+          final profileRes = await Supabase.instance.client
+              .from('profiles')
+              .select('ad_free_expiry')
+              .eq('id', user.id)
+              .maybeSingle();
+
+          if (profileRes != null && profileRes['ad_free_expiry'] != null) {
+            final dbExpiryStr = profileRes['ad_free_expiry'] as String;
+            final dbExpiryDt = DateTime.tryParse(dbExpiryStr);
+            if (dbExpiryDt != null && dbExpiryDt.millisecondsSinceEpoch > now) {
+              expiry = dbExpiryDt.millisecondsSinceEpoch;
+              await prefs.setInt('ad_free_expiry_timestamp', expiry);
+            }
+          }
+        }
+      }
+
+      if (expiry > now) {
+        final expiryDt = DateTime.fromMillisecondsSinceEpoch(expiry);
+        _adFreeTimer?.cancel();
+        _adFreeTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (!mounted) return;
+          final diff = expiryDt.difference(DateTime.now());
+          if (diff.isNegative) {
+            setState(() {
+              _isAdFree = false;
+              _adFreeExpiryDate = null;
+              _remainingAdFreeTime = Duration.zero;
+            });
+            _adFreeTimer?.cancel();
+          } else {
+            setState(() {
+              _remainingAdFreeTime = diff;
+            });
+          }
+        });
+
+        if (mounted) {
+          setState(() {
+            _isAdFree = true;
+            _adFreePlanName = planName;
+            _adFreeExpiryDate = expiryDt;
+            _remainingAdFreeTime = expiryDt.difference(DateTime.now());
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _isAdFree = false;
+            _adFreeExpiryDate = null;
+            _remainingAdFreeTime = Duration.zero;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading ad-free status: $e');
+    }
   }
 
   Future<void> _loadUserLevelAndDate() async {
@@ -202,7 +304,13 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
         if (mounted) setState(() { _billingAvailable = false; _productsLoaded = true; });
         return;
       }
-      const Set<String> kIds = <String>{'xapzap_level_2', 'xapzap_level_3', 'xapzap_level_4'};
+      const Set<String> kIds = <String>{
+        'xapzap_level_2',
+        'xapzap_level_3',
+        'xapzap_level_4',
+        'ad_free_1week',
+        'ad_free_1month',
+      };
       final ProductDetailsResponse response = await _inAppPurchase.queryProductDetails(kIds);
       if (response.notFoundIDs.isNotEmpty) {
         debugPrint("[IAP] Products not found in Play Console: ${response.notFoundIDs}");
@@ -253,6 +361,28 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
           } else if (prodId == 'xapzap_level_4') {
             level = 4;
             cost = 50.00;
+          } else if (prodId == 'ad_free_1week') {
+            await MicroJobService.subscribeAdFreeViaPlayStore('1 Week Ad-Free Pass', 1.60, 7);
+            await _loadAdFreeStatus();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('1 Week Ad-Free Pass activated! ⚡'),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            }
+          } else if (prodId == 'ad_free_1month') {
+            await MicroJobService.subscribeAdFreeViaPlayStore('1 Month Ad-Free Pass', 4.90, 30);
+            await _loadAdFreeStatus();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('1 Month Ad-Free Pass activated! ⚡'),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            }
           }
 
           if (level > 1) {
@@ -287,92 +417,66 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
   Future<void> _processUpgrade(int targetLevel, double cost) async {
     if (_isProcessing) return;
 
-    // Guard: billing service unavailable (e.g. no Google Play on device)
-    if (!_billingAvailable) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Google Play Billing is not available on this device.'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
     final String prodId = 'xapzap_level_$targetLevel';
 
-    // Guard: products haven't loaded yet — retry
-    if (!_productsLoaded) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Store products are still loading. Please try again in a moment.'),
-          backgroundColor: Colors.amber,
-        ),
-      );
-      _loadProducts(); // retry
-      return;
-    }
-
-    // Find the matching product from Play Store
-    ProductDetails? product;
-    for (final p in _products) {
-      if (p.id == prodId) {
-        product = p;
-        break;
-      }
-    }
-
-    // Guard: product not found in Play Console
-    if (product == null) {
-      debugPrint('[IAP] Product $prodId not found in loaded products: '
-          '${_products.map((p) => p.id).toList()}');
+    final bool available = await _inAppPurchase.isAvailable();
+    if (!available) {
       if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Product Not Found'),
-            content: const Text(
-              'This upgrade product could not be loaded from the Play Store.\n\n'
-              'Make sure:\n'
-              '• You installed this app from the Play Store (not sideloaded)\n'
-              '• Your device has Google Play Services\n'
-              '• The products are Active in Play Console',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _loadProducts(); // retry
-                },
-                child: const Text('Retry'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
-              ),
-            ],
-          ),
-        );
-      }
-      return;
-    }
-
-    // All good — launch Play Store billing sheet
-    setState(() { _isProcessing = true; });
-
-    try {
-      final PurchaseParam purchaseParam = PurchaseParam(productDetails: product);
-      await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
-      // _isProcessing will be set to false inside _listenToPurchaseUpdated
-    } catch (e) {
-      debugPrint('[IAP] Purchase trigger failed: $e');
-      if (mounted) {
-        setState(() { _isProcessing = false; });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not open payment sheet: $e'),
+          const SnackBar(
+            content: Text('Payment service is currently unavailable.'),
             backgroundColor: Colors.red,
           ),
         );
+      }
+      return;
+    }
+
+    setState(() { _isProcessing = true; });
+
+    try {
+      ProductDetails? product;
+      for (final p in _products) {
+        if (p.id == prodId) {
+          product = p;
+          break;
+        }
+      }
+
+      if (product == null) {
+        final response = await _inAppPurchase.queryProductDetails({prodId});
+        if (response.productDetails.isNotEmpty) {
+          product = response.productDetails.first;
+          _products.add(product);
+        }
+      }
+
+      if (product != null) {
+        final PurchaseParam purchaseParam = PurchaseParam(productDetails: product);
+        await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Upgrade plan is currently unavailable. Please try again shortly.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[IAP] Purchase trigger failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not open payment window: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() { _isProcessing = false; });
       }
     }
   }
@@ -394,7 +498,7 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
         'from_level': _currentLevel,
         'to_level': newLevel,
         'amount_paid': cost,
-        'payment_method': 'flutterwave',
+        'payment_method': 'google_play',
         'reference_id': txRef,
         'status': 'completed',
       });
@@ -405,8 +509,8 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
         final balanceRow = await BackendService.getLatestCreatorBalance(user.id);
         if (balanceRow != null) {
           final data = balanceRow.data as Map<String, dynamic>;
-          final double currentBal = (data['balanceUsd'] ?? 0.0).toDouble();
-          final double currentAvail = (data['availableBalanceUsd'] ?? 0.0).toDouble();
+          final double currentBal = double.tryParse((data['available_balance_usd'] ?? data['balance_usd'] ?? data['availableBalanceUsd'] ?? data['balanceUsd'] ?? 0.0).toString()) ?? 0.0;
+          final double currentAvail = double.tryParse((data['available_balance_usd'] ?? data['availableBalanceUsd'] ?? currentBal).toString()) ?? currentBal;
 
           await BackendService.updateRow(
             BackendService.creatorBalancesCollectionId,
@@ -436,9 +540,75 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
     }
   }
 
+  Future<void> _processAdFreePlayStorePurchase(String prodId) async {
+    if (_isProcessing) return;
+
+    final bool available = await _inAppPurchase.isAvailable();
+    if (!available) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Payment service is currently unavailable.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() { _isProcessing = true; });
+
+    try {
+      ProductDetails? product;
+      for (final p in _products) {
+        if (p.id == prodId) {
+          product = p;
+          break;
+        }
+      }
+
+      if (product == null) {
+        final response = await _inAppPurchase.queryProductDetails({prodId});
+        if (response.productDetails.isNotEmpty) {
+          product = response.productDetails.first;
+          _products.add(product);
+        }
+      }
+
+      if (product != null) {
+        final PurchaseParam purchaseParam = PurchaseParam(productDetails: product);
+        await _inAppPurchase.buyNonConsumable(purchaseParam: purchaseParam);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Ad-Free Pass is currently unavailable. Please try again in a moment.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[IAP] Ad-Free purchase error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not open payment window: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() { _isProcessing = false; });
+      }
+    }
+  }
+
   @override
   void dispose() {
     _countdownTimer?.cancel();
+    _adFreeTimer?.cancel();
     _subscription.cancel();
     BackendService.adminModeOverride.removeListener(_loadUserLevelAndDate);
     super.dispose();
@@ -455,7 +625,7 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
       return Scaffold(
         backgroundColor: backgroundColor,
         appBar: AppBar(
-          title: const Text('Upgrade Level'),
+          title: const Text('Upgrades & Subscriptions'),
           backgroundColor: backgroundColor,
           elevation: 0,
         ),
@@ -463,207 +633,590 @@ class _LevelUpgradesScreenState extends State<LevelUpgradesScreen> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      appBar: AppBar(
-        title: const Text('Level Upgrades', style: TextStyle(fontWeight: FontWeight.bold)),
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
         backgroundColor: backgroundColor,
-        elevation: 0,
+        appBar: AppBar(
+          title: const Text('Upgrades & Passes', style: TextStyle(fontWeight: FontWeight.bold)),
+          backgroundColor: backgroundColor,
+          elevation: 0,
+          bottom: TabBar(
+            indicatorColor: Colors.pinkAccent,
+            labelColor: theme.colorScheme.primary,
+            unselectedLabelColor: isDark ? Colors.white60 : Colors.black54,
+            labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+            tabs: const [
+              Tab(
+                icon: Icon(Icons.stars, size: 20),
+                text: 'Level Upgrades',
+              ),
+              Tab(
+                icon: Icon(Icons.block_flipped, size: 20),
+                text: 'Ad-Free Passes ⚡',
+              ),
+            ],
+          ),
+        ),
+        body: Stack(
+          children: [
+            TabBarView(
+              children: [
+                _buildLevelUpgradesTab(theme, isDark),
+                _buildAdFreeTab(theme, isDark),
+              ],
+            ),
+            if (_isProcessing)
+              Container(
+                color: Colors.black54,
+                child: const Center(
+                  child: CircularProgressIndicator(color: Colors.pinkAccent),
+                ),
+              ),
+          ],
+        ),
       ),
-      body: Stack(
-        children: [
-          ListView(
-            padding: const EdgeInsets.all(16.0),
-            children: [
-              // Current Level Header Card
-              Card(
-                elevation: 4,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    gradient: const LinearGradient(
-                      colors: [Colors.deepPurple, Colors.pinkAccent],
+    );
+  }
+
+  Widget _buildLevelUpgradesTab(ThemeData theme, bool isDark) {
+    return ListView(
+      padding: const EdgeInsets.all(16.0),
+      children: [
+        // Current Level Header Card
+        Card(
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: const LinearGradient(
+                colors: [Colors.deepPurple, Colors.pinkAccent],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                const Text(
+                  'YOUR ACTIVE LEVEL',
+                  style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Level $_currentLevel',
+                  style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+
+        // Countdown urgent bonus banner
+        if (_isEligibleForBonus) ...[
+          Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: theme.brightness == Brightness.dark
+                  ? LinearGradient(
+                      colors: [
+                        theme.colorScheme.primaryContainer.withOpacity(0.4),
+                        theme.colorScheme.secondaryContainer.withOpacity(0.15),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : LinearGradient(
+                      colors: [
+                        Colors.pink.shade50.withOpacity(0.95),
+                        Colors.purple.shade50.withOpacity(0.85),
+                      ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
-                  ),
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
+              border: Border.all(
+                color: theme.brightness == Brightness.dark
+                    ? theme.colorScheme.primary.withOpacity(0.5)
+                    : Colors.pink.shade300,
+                width: 1.5,
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Text(
-                        'YOUR ACTIVE LEVEL',
-                        style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
+                      Icon(
+                        Icons.stars,
+                        color: theme.brightness == Brightness.dark
+                            ? theme.colorScheme.primary
+                            : Colors.pink.shade600,
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(width: 8),
                       Text(
-                        'Level $_currentLevel',
-                        style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900),
+                        'Special Double Payout Deal! 🔥',
+                        style: TextStyle(
+                          color: theme.brightness == Brightness.dark
+                              ? theme.colorScheme.primary
+                              : Colors.pink.shade700,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
                       ),
                     ],
                   ),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // Countdown urgent bonus banner
-              if (_isEligibleForBonus) ...[
-                Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    gradient: theme.brightness == Brightness.dark
-                        ? LinearGradient(
-                            colors: [
-                              theme.colorScheme.primaryContainer.withOpacity(0.4),
-                              theme.colorScheme.secondaryContainer.withOpacity(0.15),
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          )
-                        : LinearGradient(
-                            colors: [
-                              Colors.pink.shade50.withOpacity(0.95),
-                              Colors.purple.shade50.withOpacity(0.85),
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                    border: Border.all(
+                  const SizedBox(height: 8),
+                  Text(
+                    'Upgrade within 10 days of signing up to get an immediate 50% cashback bonus added directly to your earnings balance!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
                       color: theme.brightness == Brightness.dark
-                          ? theme.colorScheme.primary.withOpacity(0.5)
-                          : Colors.pink.shade300,
-                      width: 1.5,
+                          ? theme.colorScheme.onSurface
+                          : Colors.purple.shade900,
+                      fontSize: 13,
+                      height: 1.4,
                     ),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.stars,
-                              color: theme.brightness == Brightness.dark
-                                  ? theme.colorScheme.primary
-                                  : Colors.pink.shade600,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Special Double Payout Deal! 🔥',
-                              style: TextStyle(
-                                color: theme.brightness == Brightness.dark
-                                    ? theme.colorScheme.primary
-                                    : Colors.pink.shade700,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                              ),
-                            ),
-                          ],
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: theme.brightness == Brightness.dark
+                              ? theme.colorScheme.onSurface.withOpacity(0.1)
+                              : Colors.pink.shade100.withOpacity(0.6),
+                          borderRadius: BorderRadius.circular(20),
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Upgrade within 10 days of signing up to get an immediate 50% cashback bonus added directly to your earnings balance!',
-                          textAlign: TextAlign.center,
+                        child: Text(
+                          'Expires in: ${_formatDuration(_remainingBonusTime)}',
                           style: TextStyle(
                             color: theme.brightness == Brightness.dark
-                                ? theme.colorScheme.onSurface
-                                : Colors.purple.shade900,
+                                ? theme.colorScheme.primary
+                                : Colors.pink.shade700,
+                            fontWeight: FontWeight.bold,
                             fontSize: 13,
-                            height: 1.4,
                           ),
                         ),
-                        const SizedBox(height: 12),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: theme.brightness == Brightness.dark
-                                    ? theme.colorScheme.onSurface.withOpacity(0.1)
-                                    : Colors.pink.shade100.withOpacity(0.6),
-                                borderRadius: BorderRadius.circular(20),
+                      ),
+                      const SizedBox(width: 12),
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: theme.brightness == Brightness.dark
+                              ? theme.colorScheme.primary
+                              : Colors.pink.shade700,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        ),
+                        onPressed: _showBonusInfoDialog,
+                        icon: const Icon(Icons.help_outline, size: 16),
+                        label: const Text(
+                          'Learn More',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
+
+        Text(
+          'Available Levels',
+          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+
+        _buildLevelCard(
+          level: 2,
+          title: 'Bronze Level 2',
+          cost: 6.00,
+          watchRate: '\$0.07 - \$0.15',
+          reviewRate: '\$0.10 - \$0.30',
+          unlockedReviews: 'Short Reviews (0 to 10 mins)',
+          color: const Color(0xFFCD7F32), // Rich Copper Bronze
+        ),
+        _buildLevelCard(
+          level: 3,
+          title: 'Silver Level 3',
+          cost: 25.00,
+          watchRate: '\$0.16 - \$0.30',
+          reviewRate: '\$0.30 - \$0.60',
+          unlockedReviews: 'Medium Reviews (10 to 30 mins)',
+          color: const Color(0xFFA6B4C9), // Shiny Platinum Silver
+        ),
+        _buildLevelCard(
+          level: 4,
+          title: 'Gold Level 4',
+          cost: 50.00,
+          watchRate: '\$0.18 - \$0.35',
+          reviewRate: '\$0.60 - \$1.00',
+          unlockedReviews: 'Premium Reviews (31+ mins)',
+          color: const Color(0xFFD4AF37), // Elegant Gold
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAdFreeTab(ThemeData theme, bool isDark) {
+    final cardBg = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+
+    return ListView(
+      padding: const EdgeInsets.all(16.0),
+      children: [
+        // Balance & Active Status Header Card
+        Card(
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: LinearGradient(
+                colors: isDark
+                    ? [const Color(0xFF1F2937), const Color(0xFF111827)]
+                    : [const Color(0xFF0F172A), const Color(0xFF1E293B)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.withOpacity(0.2),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.block_flipped, color: Colors.amber, size: 24),
+                          ),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Ad-Free Center',
+                              style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ValueListenableBuilder<double>(
+                      valueListenable: MicroJobService.userBalanceNotifier,
+                      builder: (context, balance, _) {
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF4ADE80).withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF4ADE80).withOpacity(0.4)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.account_balance_wallet, color: Color(0xFF4ADE80), size: 14),
+                              const SizedBox(width: 4),
+                              ReactiveAnimatedBalance(
+                                decimalDigits: 5,
+                                style: const TextStyle(
+                                  color: Color(0xFF4ADE80),
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
                               ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // Active Banner or Standard Banner
+                if (_isAdFree) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.greenAccent.withOpacity(0.4)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.verified, color: Colors.greenAccent, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
                               child: Text(
-                                'Expires in: ${_formatDuration(_remainingBonusTime)}',
-                                style: TextStyle(
-                                  color: theme.brightness == Brightness.dark
-                                      ? theme.colorScheme.primary
-                                      : Colors.pink.shade700,
+                                'ACTIVE PASS: $_adFreePlanName ⚡',
+                                style: const TextStyle(
+                                  color: Colors.greenAccent,
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            TextButton.icon(
-                              style: TextButton.styleFrom(
-                                foregroundColor: theme.brightness == Brightness.dark
-                                    ? theme.colorScheme.primary
-                                    : Colors.pink.shade700,
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              ),
-                              onPressed: _showBonusInfoDialog,
-                              icon: const Icon(Icons.help_outline, size: 16),
-                              label: const Text(
-                                'Learn More',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                              ),
-                            ),
                           ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Time Remaining: ${_formatDuration(_remainingAdFreeTime)}',
+                          style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 12),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Interrupting pop-up ads are currently stopped on your account while keeping 100% of task rewards!',
+                          style: TextStyle(color: Colors.white60, fontSize: 11, height: 1.3),
                         ),
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(height: 20),
+                ] else ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.amber, size: 20),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Activate an Ad-Free Pass to disable all pop-up ads while keeping full task earnings active!',
+                            style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.3),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
 
-              Text(
-                'Available Levels',
-                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 12),
+        // Benefits Card
+        Card(
+          elevation: 2,
+          color: cardBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Ad-Free Pass Benefits',
+                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                _buildBenefitItem(
+                  icon: Icons.shield_outlined,
+                  color: Colors.amber,
+                  title: 'Zero Interrupting Pop-up Ads',
+                  subtitle: 'No forced app-open or interstitial full-screen popups while navigating.',
+                ),
+                const SizedBox(height: 10),
+                _buildBenefitItem(
+                  icon: Icons.monetization_on_outlined,
+                  color: Colors.green,
+                  title: '100% Task & Video Rewards Active',
+                  subtitle: 'All micro jobs, AI training tasks, and video rewards remain fully payable.',
+                ),
+                const SizedBox(height: 10),
+                _buildBenefitItem(
+                  icon: Icons.bolt_outlined,
+                  color: Colors.blue,
+                  title: 'Instant Pass Activation',
+                  subtitle: 'Your ad-free status activates immediately upon subscription.',
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
 
-              _buildLevelCard(
-                level: 2,
-                title: 'Bronze Level 2',
-                cost: 6.00,
-                watchRate: '\$0.07 - \$0.15',
-                reviewRate: '\$0.10 - \$0.30',
-                unlockedReviews: 'Short Reviews (0 to 10 mins)',
-                color: const Color(0xFFCD7F32), // Rich Copper Bronze
-              ),
-              _buildLevelCard(
-                level: 3,
-                title: 'Silver Level 3',
-                cost: 25.00,
-                watchRate: '\$0.16 - \$0.30',
-                reviewRate: '\$0.30 - \$0.60',
-                unlockedReviews: 'Medium Reviews (10 to 30 mins)',
-                color: const Color(0xFFA6B4C9), // Shiny Platinum Silver
-              ),
-              _buildLevelCard(
-                level: 4,
-                title: 'Gold Level 4',
-                cost: 50.00,
-                watchRate: '\$0.18 - \$0.35',
-                reviewRate: '\$0.60 - \$1.00',
-                unlockedReviews: 'Premium Reviews (31+ mins)',
-                color: const Color(0xFFD4AF37), // Elegant Gold
-              ),
+        Text(
+          'Select Ad-Free Pass',
+          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+
+        for (final plan in _adFreePlans) _buildAdFreePlanCard(plan, theme, isDark, cardBg),
+      ],
+    );
+  }
+
+  Widget _buildBenefitItem({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+  }) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color, size: 20),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              const SizedBox(height: 2),
+              Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 11)),
             ],
           ),
-          if (_isProcessing)
-            Container(
-              color: Colors.black54,
-              child: const Center(
-                child: CircularProgressIndicator(color: Colors.pinkAccent),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAdFreePlanCard(
+    Map<String, dynamic> plan,
+    ThemeData theme,
+    bool isDark,
+    Color cardBg,
+  ) {
+    final double price = (plan['price'] as num).toDouble();
+    final String title = plan['title'] as String;
+    final int durationDays = plan['durationDays'] as int;
+    final String badge = plan['badge'] as String;
+    final Color badgeColor = plan['badgeColor'] as Color;
+    final List<Color> gradient = plan['gradient'] as List<Color>;
+    final IconData icon = plan['icon'] as IconData;
+    final String playProductId = durationDays == 7 ? 'ad_free_1week' : 'ad_free_1month';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 3,
+      color: cardBg,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: badgeColor.withOpacity(0.4), width: 1.5),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(colors: gradient),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(icon, color: Colors.white, size: 20),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: theme.colorScheme.onSurface),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: badgeColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: badgeColor.withOpacity(0.5)),
+                  ),
+                  child: Text(
+                    badge,
+                    style: TextStyle(color: badgeColor, fontWeight: FontWeight.bold, fontSize: 10),
+                  ),
+                ),
+              ],
+            ),
+            const Divider(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Duration:', style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500)),
+                Text('$durationDays Days Pass', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onSurface)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Price:', style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500)),
+                Text(
+                  '\$${price.toStringAsFixed(2)}',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: badgeColor),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Pop-up Ads:', style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500)),
+                const Text('DISABLED 🛑', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: badgeColor,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 44),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 2,
+              ),
+              onPressed: _isProcessing ? null : () => _processAdFreePlayStorePurchase(playProductId),
+              child: Text(
+                'Subscribe (\$${price.toStringAsFixed(2)})',
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
